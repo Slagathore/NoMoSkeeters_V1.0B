@@ -1,0 +1,23 @@
+# Iron Dome Anti-Mosquito System
+# Python 3.10+ required
+# Install with: pip install -r requirements.txt
+
+# GUI Framework
+PySide6>=6.5.0
+
+# Computer Vision + Image Processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# GoPro Open API HTTP calls
+requests>=2.31.0
+
+# Object Detection (optional YOLO-based accurate detection mode)
+# Comment out if you don't need AI-based detection — background subtraction works without this
+ultralytics>=8.0.0
+
+# Kalman filter / Scientific computing (Hungarian algorithm for tracker assignment)
+scipy>=1.11.0
+
+# Optional: dedicated Kalman filter library (falls back to numpy impl if not present)
+filterpy>=1.4.5

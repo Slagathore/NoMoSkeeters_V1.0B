@@ -1,0 +1,44 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Unit test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# User data / calibration files
+user_data/
+*.json
+!requirements*.json
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PyInstaller
+*.spec
