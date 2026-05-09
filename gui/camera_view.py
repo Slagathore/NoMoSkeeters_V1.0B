@@ -69,8 +69,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import (QColor, QFont, QImage, QPainter, QPen,
-                           QPixmap)
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 import config.settings as _s

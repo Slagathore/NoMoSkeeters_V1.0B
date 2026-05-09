@@ -23,11 +23,11 @@
 
 ## Hardware Requirements
 
-| Component | Details |
-|-----------|---------|
-| **Camera** | GoPro (any model supporting GoPro Open API WiFi) or USB webcam |
+| Component           | Details                                                         |
+| ------------------- | --------------------------------------------------------------- |
+| **Camera**          | GoPro (any model supporting GoPro Open API WiFi) or USB webcam  |
 | **Laser projector** | LaserCube by Wicked Lasers (192.168.1.1, UDP ports 45456/45457) |
-| **Host PC** | Windows 10/11, Python 3.10+, Wi-Fi NIC |
+| **Host PC**         | Windows 10/11, Python 3.10+, Wi-Fi NIC                          |
 
 ### Network Setup
 
@@ -44,15 +44,15 @@ Python 3.10 or newer is required (uses `X | Y` union syntax and `match` statemen
 pip install -r requirements.txt
 ```
 
-| Package | Purpose |
-|---------|---------|
-| `PySide6 >= 6.5.0` | Qt6 GUI framework |
-| `opencv-python >= 4.8.0` | Camera capture and image processing |
-| `numpy >= 1.24.0` | Array math and Kalman filter matrices |
-| `requests >= 2.31.0` | GoPro Open API HTTP client |
-| `scipy >= 1.11.0` | Hungarian algorithm for tracker assignment |
-| `ultralytics >= 8.0.0` | Optional YOLO detection (falls back to BGSub if absent) |
-| `filterpy >= 1.4.5` | Optional dedicated Kalman library (falls back to NumPy impl) |
+| Package                  | Purpose                                                      |
+| ------------------------ | ------------------------------------------------------------ |
+| `PySide6 >= 6.5.0`       | Qt6 GUI framework                                            |
+| `opencv-python >= 4.8.0` | Camera capture and image processing                          |
+| `numpy >= 1.24.0`        | Array math and Kalman filter matrices                        |
+| `requests >= 2.31.0`     | GoPro Open API HTTP client                                   |
+| `scipy >= 1.11.0`        | Hungarian algorithm for tracker assignment                   |
+| `ultralytics >= 8.0.0`   | Optional YOLO detection (falls back to BGSub if absent)      |
+| `filterpy >= 1.4.5`      | Optional dedicated Kalman library (falls back to NumPy impl) |
 
 ---
 
@@ -73,23 +73,27 @@ python main.py
 python main.py [--log-level {DEBUG,INFO,WARNING,ERROR}] [--config <path>]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--log-level` | `INFO` | Console and file log verbosity |
-| `--config` | `user_data/config.json` | Path to JSON config override file |
+| Flag          | Default                 | Description                       |
+| ------------- | ----------------------- | --------------------------------- |
+| `--log-level` | `INFO`                  | Console and file log verbosity    |
+| `--config`    | `user_data/config.json` | Path to JSON config override file |
 
 ---
 
 ## Usage
 
 ### 1. Connect GoPro
+
 Click **Connect GoPro** in the Control Panel. The system connects via the GoPro WiFi AP and starts the UDP preview stream.
 
 ### 2. Connect LaserCube
+
 Click **Connect Laser**. The system sends a handshake to the LaserCube and enables output.
 
 ### 3. Calibrate (first run)
+
 Go to **Tools → Calibrate Laser**. The calibration wizard will:
+
 1. Fire the laser at a grid of points
 2. Detect the laser dot in the camera feed via background subtraction
 3. Compute a perspective homography matrix
@@ -98,9 +102,11 @@ Go to **Tools → Calibrate Laser**. The calibration wizard will:
 Calibration is loaded automatically on subsequent launches.
 
 ### 4. Configure No-Fire Zones
+
 Click **Add Zone** in the Control Panel, then click two corners on the camera view. Any target inside a no-fire zone will not be engaged.
 
 ### 5. Arm and Engage
+
 Click **ARM** to enable laser firing. The system will automatically track detected mosquitoes and fire the laser at the predicted intercept position.
 
 Use **Emergency Stop** or **Disarm** at any time to halt laser output.
@@ -169,22 +175,23 @@ All GUI updates are marshalled to the main thread via `QTimer.singleShot(0, ...)
 
 All constants live in `config/settings.py`. User overrides are persisted to `user_data/config.json` via `ConfigManager`. Key tuning parameters:
 
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `DETECTION_MOG2_HISTORY` | 200 | MOG2 background model history length |
-| `DETECTION_MOG2_VARTH` | 30 | MOG2 variance threshold |
-| `TRACKER_MAX_DISAPPEARED` | 10 | Frames before a track is pruned |
-| `TRACKER_MAX_DISTANCE` | 80 | Max pixel distance for assignment |
-| `LASER_MAX_DWELL_MS` | 500 | Max time to fire at a single target (ms) |
-| `TARGETING_PREDICT_MS` | 50 | Milliseconds ahead to predict target position |
-| `CALIBRATION_GRID_COLS` | 4 | Calibration grid columns |
-| `CALIBRATION_GRID_ROWS` | 4 | Calibration grid rows |
+| Constant                  | Default | Description                                   |
+| ------------------------- | ------- | --------------------------------------------- |
+| `DETECTION_MOG2_HISTORY`  | 200     | MOG2 background model history length          |
+| `DETECTION_MOG2_VARTH`    | 30      | MOG2 variance threshold                       |
+| `TRACKER_MAX_DISAPPEARED` | 10      | Frames before a track is pruned               |
+| `TRACKER_MAX_DISTANCE`    | 80      | Max pixel distance for assignment             |
+| `LASER_MAX_DWELL_MS`      | 500     | Max time to fire at a single target (ms)      |
+| `TARGETING_PREDICT_MS`    | 50      | Milliseconds ahead to predict target position |
+| `CALIBRATION_GRID_COLS`   | 4       | Calibration grid columns                      |
+| `CALIBRATION_GRID_ROWS`   | 4       | Calibration grid rows                         |
 
 ---
 
 ## Safety System
 
 The `SafetySystem` class (`utils/safety.py`) enforces:
+
 - **Arm/disarm** with explicit user action required
 - **Emergency stop** — immediately blanks the laser and blocks re-arm
 - **No-fire zones** — rectangular exclusion zones in camera pixel space; any target inside is not engaged
@@ -195,6 +202,7 @@ The `SafetySystem` class (`utils/safety.py`) enforces:
 ## Contributing
 
 This project is a personal/research system. Issues and pull requests are welcome. When contributing, please:
+
 - Keep all laser safety interlocks intact
 - Follow the existing code style (PySide6 Qt patterns, type annotations, docstrings)
 - Run `python -m py_compile` on all modified files before submitting
