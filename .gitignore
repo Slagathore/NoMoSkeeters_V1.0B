@@ -1,44 +1,47 @@
-# Byte-compiled / optimized / DLL files
+# NoMoSkeeters v2 — .gitignore
+# Per HARDWARE_FINDINGS.md §6 repo skeleton.
+
+# Operator/session data — never committed.
+user_data/
+
+# Recorded media + raw captures (large, regenerable).
+*.ts
+*.mp4
+*.npz
+
+# Captured fixture bytes live in tests/fixtures and ARE committed (golden_*.bin).
+# Stray .bin captures elsewhere are not.
+/fixtures/*.bin
+/*.bin
+
+# Large local SDK installer — fetch from Microsoft, don't commit.
+KinectSDK-v2.0_1409-Setup.exe
+
+# Local-only: contains the GoPro COHN password. Keep off the public repo.
+# TODO: fold the non-secret findings into README.md later.
+HARDWARE_FINDINGS.md
+
+# Old v1 codebase archive — superseded by this rewrite; v1 lives in git history.
+lasercubeirondomefiles.zip
+
+# Python.
 __pycache__/
 *.py[cod]
-*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
 
-# Virtual environments
+# Virtualenvs.
 .venv/
 venv/
 env/
-ENV/
 
-# Distribution / packaging
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Unit test / coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
-# IDE / editor files
+# Editor / OS cruft.
 .vscode/
 .idea/
 *.swp
-*.swo
-
-# Logs
-logs/
-*.log
-
-# User data / calibration files
-user_data/
-*.json
-!requirements*.json
-
-# OS-generated files
-.DS_Store
 Thumbs.db
 desktop.ini
-
-# PyInstaller
-*.spec

@@ -1,421 +1,243 @@
+"""CoordinateMapper — the NORM↔GALVO homography learned by calibration.
+
+Calibration observes laser dots: fire a known galvo coord, the camera detects
+a sensor pixel. After normalization that is GALVO→NORM — the inverse of what
+the targeting pipeline needs. We fit one direction and invert ONCE here, then
+store BOTH matrices so the hot path never inverts (§8.5).
+
+Reference: BOOTSTRAP.md §8.4-§8.5, BOOTSTRAP_AMENDMENTS.md §8.5-§8.6.
 """
-Iron Dome Anti-Mosquito System
-================================
-Mission: Automatically detect and neutralize mosquitos in real-time using a
-         GoPro camera for vision and a LaserCube for precision targeting.
-
-Calibration Module
-------------------
-Provides the CalibrationController: an orchestrator class that guides the user
-through a multi-point calibration procedure to compute the homography matrix
-used by CoordinateMapper.
-
-Calibration procedure:
-  1. Fire the laser at a known LaserCube coordinate (one of a grid of points).
-  2. Capture one or more camera frames *while the laser is firing*.
-  3. Detect the laser dot in the camera image by looking for a bright spot
-     above CALIBRATION_DOT_DETECT_THRESHOLD.
-  4. Record the (camera_x, camera_y) ↔ (laser_x, laser_y) correspondence.
-  5. After collecting ≥4 pairs, compute the homography via CoordinateMapper.
-  6. Save the result to CALIBRATION_FILE.
-
-Grid layout:
-  A CALIBRATION_GRID_COLS × CALIBRATION_GRID_ROWS grid of laser points is
-  generated, spread evenly across the laser coordinate range, inset by 10%
-  from the edges to avoid projecting outside the camera FOV.
-
-Automatic dot detection:
-  The function _find_laser_dot() subtracts a background frame (captured before
-  the laser fires) from the live frame, thresholds, and finds the brightest
-  centroid.  This is robust to moderate ambient lighting.
-
-Modules imported:
-  cv2, numpy         — image processing for dot detection
-  time               — delays for laser settle / camera capture
-  pathlib            — path for calibration file
-  config.settings    — CALIBRATION_* constants
-  targeting.coordinate_mapper — CoordinateMapper
-  laser.laser_manager — LaserManager (for firing test points)
-  utils.logging_utils — get_logger
-
-Classes:
-  CalibrationPoint   — NamedTuple holding one calibration correspondence.
-  CalibrationController — Orchestrates the full calibration flow.
-
-Methods (CalibrationController):
-  start(camera_frame_fn, laser_manager) — Begin calibration procedure.
-  next_point()        — Advance to the next grid point; fires laser; detects dot.
-  finish()            — Compute homography from all collected points; save.
-  cancel()            — Abort calibration, discard collected points.
-  current_step()      — Return (current index, total steps) tuple.
-  is_complete()       — True if enough points collected for a valid homography.
-  points_collected()  — Number of valid correspondences gathered so far.
-  get_laser_grid()    — Return the full list of laser coordinate grid points.
-  set_background_frame(frame) — Manually set the background subtraction frame.
-
-Variables (instance):
-  _grid        (list[tuple[int,int]]): Pre-computed grid of laser coordinates.
-  _step        (int):                  Current calibration step index.
-  _pairs       (list[CalibrationPoint]): Collected correspondences.
-  _bg_frame    (np.ndarray | None):    Background frame for dot detection.
-  _laser_mgr   (LaserManager | None): Laser manager to fire test points.
-  _frame_fn    (callable | None):     Function returning the latest ndarray frame.
-  _mapper      (CoordinateMapper | None): The mapper to update after calibration.
-
-#todo Add visual overlay showing expected vs. detected dot position for each step.
-#todo Allow manual click-to-confirm dot position in case auto-detect fails.
-#todo Support re-running individual calibration steps if detection failed.
-#todo Add a live re-calibration mode that updates H incrementally from tracking data.
-"""
-
 from __future__ import annotations
 
-import time
+import json
+import logging
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import numpy as np
 
-import config.settings as _s
-from targeting.coordinate_mapper import CoordinateMapper
-from utils.logging_utils import get_logger
+from config import settings
+from laser.types import COORD_MAX
 
-logger = get_logger(__name__)
+_log = logging.getLogger(__name__)
 
+CALIBRATION_SCHEMA_VERSION = 2
+
+
+# ── Homography helpers ───────────────────────────────────────────────────
+
+def apply_homography(H: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Apply a 3×3 homography to an (N,2) array of points; returns (N,2)."""
+    pts = np.asarray(pts, dtype=float).reshape(-1, 2)
+    homog = np.hstack([pts, np.ones((len(pts), 1))])
+    out = (H @ homog.T).T
+    return out[:, :2] / out[:, 2:3]
+
+
+# ── Multi-depth validation (§8.6) ────────────────────────────────────────
+
+@dataclass(frozen=True)
+class TestTarget:
+    """A validation observation: a commanded galvo coord, the sensor-norm
+    coord it was detected at, and the depth it was captured at."""
+    __test__ = False   # not a pytest test class despite the name (§8.6)
+    galvo: tuple[float, float]
+    observed_norm: tuple[float, float]
+    depth_m: float
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    per_depth_residual_norm: dict[float, float]
+    max_residual_norm: float
+    passed: bool
+
+    def to_dict(self) -> dict:
+        depths = sorted(self.per_depth_residual_norm)
+        return {
+            "depths_m": depths,
+            "residuals_norm": [self.per_depth_residual_norm[d] for d in depths],
+            "passed": self.passed,
+        }
+
+
+def group_by_depth_bin(targets: list[TestTarget],
+                       bin_size_m: float = 0.5) -> dict[float, list[TestTarget]]:
+    """Bucket validation targets by depth, rounded to bin_size_m."""
+    bins: dict[float, list[TestTarget]] = {}
+    for t in targets:
+        key = round(t.depth_m / bin_size_m) * bin_size_m
+        bins.setdefault(key, []).append(t)
+    return bins
+
+
+def validate_multi_depth(mapper: "CoordinateMapper",
+                         test_targets: list[TestTarget]) -> ValidationResult:
+    """Validate a fitted mapper at multiple depths inside the operating
+    volume. A planar homography that fails here cannot cover the volume —
+    escalate to a depth-aware mapper (v0.3)."""
+    by_depth = group_by_depth_bin(test_targets, bin_size_m=0.5)
+    residuals: dict[float, float] = {}
+    for depth_m, group in by_depth.items():
+        errors = [
+            float(np.linalg.norm(
+                mapper.galvo_to_norm(*t.galvo) - np.asarray(t.observed_norm)))
+            for t in group
+        ]
+        residuals[depth_m] = float(np.mean(errors)) if errors else 0.0
+    max_residual = max(residuals.values()) if residuals else 0.0
+    return ValidationResult(
+        per_depth_residual_norm=residuals,
+        max_residual_norm=max_residual,
+        passed=max_residual < settings.CALIBRATION_MAX_RESIDUAL_NORM,
+    )
+
+
+# ── CoordinateMapper ─────────────────────────────────────────────────────
 
 @dataclass
-class CalibrationPoint:
+class CoordinateMapper:
+    """Bidirectional NORM↔GALVO mapper. Both homographies precomputed.
+
+    Build with CoordinateMapper.fit() from calibration correspondences, or
+    CoordinateMapper.load() from a saved calibration JSON v2.
     """
-    One calibration correspondence: camera pixel ↔ laser coordinate.
+    H_norm_to_galvo: np.ndarray
+    H_galvo_to_norm: np.ndarray
+    sensor_id: str = ""
+    pattern: str = ""
+    n_points: int = 0
+    residual_norm: float = 0.0
+    residual_galvo: float = 0.0
+    mount_tilt_config: str = ""
+    scene: str = ""
+    validation: Optional[ValidationResult] = None
+    # Kinect-only extras (§8.10): which stream was calibrated, and an
+    # informational pose hint for re-placing a moved Kinect.
+    stream: str = ""
+    kinect_relative_pose: Optional[dict] = None
 
-    Attributes:
-        step        (int):   Step index in the calibration grid (0-based).
-        laser_x     (int):   Known laser X coordinate fired at.
-        laser_y     (int):   Known laser Y coordinate fired at.
-        camera_x    (float): Detected dot centroid X in camera pixels.
-        camera_y    (float): Detected dot centroid Y in camera pixels.
-        confidence  (float): Dot detection quality 0.0–1.0.
-    """
-    step: int
-    laser_x: int
-    laser_y: int
-    camera_x: float
-    camera_y: float
-    confidence: float = 1.0
+    # ── Hot-path conversions ─────────────────────────────────────────────
 
+    def norm_to_galvo(self, x: float, y: float) -> np.ndarray:
+        """Map a sensor-NORM coord to galvo-NORM space [0,1]². Hot path —
+        no inversion, just one matrix-vector apply."""
+        return apply_homography(self.H_norm_to_galvo, [(x, y)])[0]
 
-class CalibrationController:
-    """
-    Orchestrates the LaserCube ↔ camera calibration procedure.
+    def galvo_to_norm(self, x: float, y: float) -> np.ndarray:
+        """Map a galvo-NORM coord back to sensor-NORM space [0,1]²."""
+        return apply_homography(self.H_galvo_to_norm, [(x, y)])[0]
 
-    Typical usage (from calibration dialog):
-        controller = CalibrationController(mapper)
-        controller.start(get_latest_frame_fn, laser_manager)
-        while not controller.is_complete():
-            ok, msg = controller.next_point()   # blocks briefly
-            update_ui(msg)
-        controller.finish()
+    # ── Fitting ──────────────────────────────────────────────────────────
 
-    Attributes:
-        _mapper     (CoordinateMapper):         The mapper to update.
-        _grid       (list[tuple[int,int]]):      Laser grid points to visit.
-        _step       (int):                       Current step (0-based).
-        _pairs      (list[CalibrationPoint]):    Collected correspondences.
-        _bg_frame   (np.ndarray | None):         Background frame.
-        _laser_mgr  (any | None):               LaserManager reference.
-        _frame_fn   (Callable | None):           Returns latest BGR frame.
-        _running    (bool):                      True while calibration active.
-    """
-
-    def __init__(self, mapper: CoordinateMapper) -> None:
+    @classmethod
+    def fit(cls,
+            galvo_pts: list[tuple[float, float]],
+            norm_pts: list[tuple[float, float]],
+            *,
+            sensor_id: str = "",
+            pattern: str = "",
+            mount_tilt_config: str = "",
+            scene: str = "") -> "CoordinateMapper":
+        """Fit from observed correspondences. Option A (§8.5): fit the
+        physically-observed GALVO→NORM direction, invert once for the inverse.
+        cv2.findHomography needs ≥ 4 non-degenerate correspondences.
         """
-        Initialise the controller with a CoordinateMapper to fill.
+        galvo = np.asarray(galvo_pts, dtype=float).reshape(-1, 2)
+        norm = np.asarray(norm_pts, dtype=float).reshape(-1, 2)
+        if len(galvo) < 4 or len(galvo) != len(norm):
+            raise ValueError(
+                f"need ≥4 matched correspondences, got {len(galvo)}/{len(norm)}")
 
-        Args:
-            mapper: The CoordinateMapper that will receive the computed H.
-        """
-        self._mapper: CoordinateMapper = mapper
-        self._grid: list[tuple[int, int]] = self._build_grid()
-        self._step: int = 0
-        self._pairs: list[CalibrationPoint] = []
-        self._bg_frame: np.ndarray | None = None
-        self._laser_mgr = None       # type: ignore[assignment]
-        self._frame_fn: Callable[[], np.ndarray | None] | None = None
-        self._running: bool = False
-        logger.debug(
-            "CalibrationController created: %d grid points.", len(self._grid)
+        H_galvo_to_norm, _ = cv2.findHomography(galvo, norm, method=0)
+        if H_galvo_to_norm is None:
+            raise ValueError("findHomography failed — degenerate points?")
+        H_norm_to_galvo = np.linalg.inv(H_galvo_to_norm)
+
+        mapper = cls(
+            H_norm_to_galvo=H_norm_to_galvo,
+            H_galvo_to_norm=H_galvo_to_norm,
+            sensor_id=sensor_id, pattern=pattern, n_points=len(galvo),
+            mount_tilt_config=mount_tilt_config, scene=scene,
         )
+        mapper._recompute_residuals(galvo, norm)
+        return mapper
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────────────────────────────────────────
+    def _recompute_residuals(self, galvo: np.ndarray, norm: np.ndarray) -> None:
+        """Mean reprojection error, both directions. residual_norm is in
+        normalized units; residual_galvo is scaled to 12-bit DAC units to
+        match the calibration-JSON convention."""
+        pred_norm = apply_homography(self.H_galvo_to_norm, galvo)
+        pred_galvo = apply_homography(self.H_norm_to_galvo, norm)
+        self.residual_norm = float(
+            np.mean(np.linalg.norm(pred_norm - norm, axis=1)))
+        self.residual_galvo = float(
+            np.mean(np.linalg.norm(pred_galvo - galvo, axis=1)) * COORD_MAX)
 
-    def start(
-        self,
-        frame_fn: Callable[[], np.ndarray | None],
-        laser_mgr,  # LaserManager — avoid circular import with string annotation
-    ) -> None:
-        """
-        Begin calibration session.
+    # ── Serialization — calibration JSON v2 (§8.5) ───────────────────────
 
-        Args:
-            frame_fn:  Zero-argument callable that returns the latest BGR frame
-                       (or None if unavailable).  Usually CameraManager.snapshot().
-            laser_mgr: LaserManager instance used to fire test points.
-        """
-        self._frame_fn = frame_fn
-        self._laser_mgr = laser_mgr
-        self._step = 0
-        self._pairs = []
-        self._running = True
+    def to_dict(self) -> dict:
+        d = {
+            "schema_version": CALIBRATION_SCHEMA_VERSION,
+            "sensor_id": self.sensor_id,
+            "mount_tilt_config": self.mount_tilt_config,
+            "scene": self.scene,
+            "n_points": self.n_points,
+            "pattern": self.pattern,
+            "H_norm_to_galvo": self.H_norm_to_galvo.tolist(),
+            "H_galvo_to_norm": self.H_galvo_to_norm.tolist(),
+            "residual_norm": self.residual_norm,
+            "residual_galvo": self.residual_galvo,
+        }
+        if self.validation is not None:
+            d["validation"] = self.validation.to_dict()
+        if self.stream:
+            d["stream"] = self.stream
+        if self.kinect_relative_pose is not None:
+            d["kinect_relative_pose"] = self.kinect_relative_pose
+        return d
 
-        # Capture background (laser off)
-        self._capture_background()
-        logger.info("Calibration started: %d steps.", len(self._grid))
-
-    def next_point(self) -> tuple[bool, str]:
-        """
-        Fire the laser at the current grid point, detect the dot, record pair.
-
-        Advances the step counter on success.
-
-        Returns:
-            Tuple (success, message):
-              success — True if dot was detected and pair recorded.
-              message — Human-readable description of what happened.
-        """
-        if not self._running:
-            return False, "Calibration not started."
-        if self._step >= len(self._grid):
-            return False, "All calibration steps complete — call finish()."
-        if self._laser_mgr is None or self._frame_fn is None:
-            return False, "CalibrationController not properly initialised."
-
-        lx, ly = self._grid[self._step]
-        logger.info(
-            "Calibration step %d/%d: firing at laser (%d, %d) …",
-            self._step + 1,
-            len(self._grid),
-            lx,
-            ly,
-        )
-
-        # Fire laser at grid point
-        self._laser_mgr.send_test_point(lx, ly)
-        time.sleep(0.15)  # allow laser to settle and camera to capture
-
-        # Capture frame with laser on
-        frame = self._frame_fn()
-        if frame is None:
-            return False, f"Step {self._step + 1}: no camera frame available."
-
-        # Detect the laser dot
-        cam_x, cam_y, confidence = self._find_laser_dot(frame)
-
-        if confidence < 0.3:
-            logger.warning(
-                "Step %d: dot detection confidence %.2f — possible false negative.",
-                self._step + 1,
-                confidence,
+    @classmethod
+    def from_dict(cls, d: dict) -> "CoordinateMapper":
+        ver = d.get("schema_version")
+        if ver != CALIBRATION_SCHEMA_VERSION:
+            raise ValueError(
+                f"calibration schema_version {ver}, expected "
+                f"{CALIBRATION_SCHEMA_VERSION}")
+        validation = None
+        if "validation" in d:
+            v = d["validation"]
+            per_depth = dict(zip(v["depths_m"], v["residuals_norm"]))
+            validation = ValidationResult(
+                per_depth_residual_norm=per_depth,
+                max_residual_norm=max(v["residuals_norm"]) if v["residuals_norm"] else 0.0,
+                passed=v["passed"],
             )
-            msg = (
-                f"Step {self._step + 1}: dot detection was poor (conf={confidence:.2f}). "
-                "Ensure room is dim and laser is pointing at a flat surface."
-            )
-            # We still record the point but flag it
-        else:
-            msg = f"Step {self._step + 1}/{len(self._grid)}: detected at camera ({cam_x:.0f}, {cam_y:.0f})."
-
-        pair = CalibrationPoint(
-            step=self._step,
-            laser_x=lx,
-            laser_y=ly,
-            camera_x=cam_x,
-            camera_y=cam_y,
-            confidence=confidence,
-        )
-        self._pairs.append(pair)
-        self._step += 1
-        logger.info("Step %d recorded: cam=(%.0f,%.0f) laser=(%d,%d) conf=%.2f",
-                    self._step, cam_x, cam_y, lx, ly, confidence)
-        return True, msg
-
-    def finish(self) -> bool:
-        """
-        Compute the homography from collected pairs and save to disk.
-
-        Returns:
-            True if homography was computed and saved, False otherwise.
-        """
-        if len(self._pairs) < 4:
-            logger.error(
-                "finish() called with only %d pairs — need at least 4.", len(self._pairs)
-            )
-            return False
-
-        camera_pts = [(p.camera_x, p.camera_y) for p in self._pairs]
-        laser_pts = [(p.laser_x, p.laser_y) for p in self._pairs]
-
-        ok = self._mapper.compute_homography(camera_pts, laser_pts)
-        if ok:
-            self._mapper.save_calibration()
-            logger.info("Calibration complete and saved.")
-        else:
-            logger.error("Homography computation failed — check calibration points.")
-
-        self._running = False
-        return ok
-
-    def cancel(self) -> None:
-        """Abort calibration and discard collected pairs."""
-        self._running = False
-        self._pairs = []
-        self._step = 0
-        logger.info("Calibration cancelled.")
-
-    def current_step(self) -> tuple[int, int]:
-        """
-        Return (current_step_index, total_steps) for progress display.
-
-        Returns:
-            Tuple of (current 0-based step index, total grid points).
-        """
-        return self._step, len(self._grid)
-
-    def is_complete(self) -> bool:
-        """Return True once all grid points have been processed."""
-        return self._step >= len(self._grid)
-
-    def points_collected(self) -> int:
-        """Return the number of valid correspondence pairs collected so far."""
-        return len(self._pairs)
-
-    def get_laser_grid(self) -> list[tuple[int, int]]:
-        """Return the list of laser coordinate grid points for this calibration."""
-        return list(self._grid)
-
-    def set_background_frame(self, frame: np.ndarray) -> None:
-        """
-        Manually set the background frame used for laser dot subtraction.
-
-        Normally captured automatically in start(), but can be overridden.
-
-        Args:
-            frame: BGR numpy array with NO laser dot.
-        """
-        self._bg_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        logger.debug("Background frame set manually.")
-
-    def get_pairs(self) -> list[CalibrationPoint]:
-        """Return a copy of the collected correspondence pairs."""
-        return list(self._pairs)
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Private helpers
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _build_grid(self) -> list[tuple[int, int]]:
-        """
-        Generate a COLS × ROWS grid of laser coordinates inset by 10%.
-
-        Returns:
-            List of (laser_x, laser_y) tuples in row-major order.
-        """
-        cols = _s.CALIBRATION_GRID_COLS
-        rows = _s.CALIBRATION_GRID_ROWS
-        inset = 0.10  # 10% inset from edges
-        lo = int(_s.LASERCUBE_COORD_MIN * (1.0 - inset))
-        hi = int(_s.LASERCUBE_COORD_MAX * (1.0 - inset))
-
-        xs = [int(lo + (hi - lo) * c / (cols - 1)) for c in range(cols)]
-        ys = [int(lo + (hi - lo) * r / (rows - 1)) for r in range(rows)]
-
-        grid: list[tuple[int, int]] = []
-        for y in ys:
-            for x in xs:
-                grid.append((x, y))
-        return grid
-
-    def _capture_background(self) -> None:
-        """Capture a background frame (laser off) for dot subtraction."""
-        if self._frame_fn is None:
-            return
-        # Ensure laser is not firing
-        if self._laser_mgr is not None:
-            # Disarm is handled by safety system; just wait briefly
-            time.sleep(0.1)
-        frame = self._frame_fn()
-        if frame is not None:
-            self._bg_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-            logger.debug("Background frame captured for calibration.")
-
-    def _find_laser_dot(
-        self,
-        frame: np.ndarray,
-    ) -> tuple[float, float, float]:
-        """
-        Detect the laser dot centroid in a BGR frame.
-
-        Uses background subtraction (if available) and bright-spot detection.
-
-        Args:
-            frame: BGR numpy array with the laser dot present.
-
-        Returns:
-            (cam_x, cam_y, confidence) — centroid in pixels and quality [0,1].
-            Returns (0.0, 0.0, 0.0) if detection fails.
-        """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
-
-        # Background subtraction to isolate the laser dot
-        if self._bg_frame is not None and self._bg_frame.shape == gray.shape:
-            diff = np.clip(gray - self._bg_frame, 0, 255).astype(np.uint8)
-        else:
-            diff = gray.astype(np.uint8)
-
-        # Extract the laser colour channel(s) for better isolation
-        # Green channel is dominant for green lasers; use all channels for white
-        b, g, r = cv2.split(frame)
-        # Build a channel-max mask to catch any laser colour
-        laser_channel = np.maximum(np.maximum(r, g), b)
-        combined = cv2.addWeighted(diff, 0.6, laser_channel, 0.4, 0)
-
-        # Threshold
-        threshold = _s.CALIBRATION_DOT_DETECT_THRESHOLD
-        _, binary = cv2.threshold(combined, threshold, 255, cv2.THRESH_BINARY)
-
-        # Find brightest contour
-        contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        return cls(
+            H_norm_to_galvo=np.asarray(d["H_norm_to_galvo"], dtype=float),
+            H_galvo_to_norm=np.asarray(d["H_galvo_to_norm"], dtype=float),
+            sensor_id=d.get("sensor_id", ""),
+            pattern=d.get("pattern", ""),
+            n_points=d.get("n_points", 0),
+            residual_norm=d.get("residual_norm", 0.0),
+            residual_galvo=d.get("residual_galvo", 0.0),
+            mount_tilt_config=d.get("mount_tilt_config", ""),
+            scene=d.get("scene", ""),
+            validation=validation,
+            stream=d.get("stream", ""),
+            kinect_relative_pose=d.get("kinect_relative_pose"),
         )
 
-        if not contours:
-            logger.debug("_find_laser_dot: no contours found (threshold=%d).", threshold)
-            # Fallback: find raw brightest pixel
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(combined)
-            if max_val < threshold * 0.5:
-                return 0.0, 0.0, 0.0
-            return float(max_loc[0]), float(max_loc[1]), float(max_val / 255.0)
+    def save(self, path: Path | str) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.to_dict(), indent=2))
+        _log.info("calibration saved: %s (residual_norm=%.4f)",
+                  path, self.residual_norm)
+        return path
 
-        # Use the largest contour as the laser dot
-        largest = max(contours, key=cv2.contourArea)
-        M = cv2.moments(largest)
-        if M["m00"] == 0:
-            return 0.0, 0.0, 0.0
-
-        cx = M["m10"] / M["m00"]
-        cy = M["m01"] / M["m00"]
-
-        # Confidence based on contour area and brightness
-        area = cv2.contourArea(largest)
-        # Small compact bright blob → high confidence
-        area_score = min(1.0, area / 50.0) if area < 200 else max(0.3, 200.0 / area)
-
-        # Check mean brightness inside the contour mask
-        mask = np.zeros(binary.shape, dtype=np.uint8)
-        cv2.drawContours(mask, [largest], -1, 255, -1)
-        mean_brightness = float(cv2.mean(combined, mask=mask)[0]) / 255.0
-
-        confidence = (area_score * 0.4 + mean_brightness * 0.6)
-        return float(cx), float(cy), float(confidence)
+    @classmethod
+    def load(cls, path: Path | str) -> "CoordinateMapper":
+        return cls.from_dict(json.loads(Path(path).read_text()))

@@ -1,0 +1,4 @@
+# Silence the Markdown linter on every doc in the repo.
+# The bootstrap docs and findings are quoted-verbatim canonical records, not
+# prose to be reflowed to satisfy MD0xx rules — see HARDWARE_FINDINGS.md.
+*.md

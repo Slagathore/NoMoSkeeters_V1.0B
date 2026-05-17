@@ -1,197 +1,136 @@
+"""Layered settings loader.
+
+Resolution order, lowest to highest priority:
+  1. Defaults from `config.settings` module
+  2. JSON overrides from USER_CONFIG_PATH
+  3. Environment variables prefixed with `NMS_<KEY>`
+  4. In-process `set()` calls (runtime-mutable settings only)
+
+Reference: BOOTSTRAP.md §13.
 """
-Iron Dome Anti-Mosquito System
-================================
-Mission: Automatically detect and neutralize mosquitos in real-time using a
-         GoPro camera for vision and a LaserCube for precision targeting.
-
-Config Manager Module
----------------------
-Handles reading and writing of user-specific configuration overrides stored in
-a JSON file on disk.  On first run the file is created with an empty dict;
-subsequent runs merge the persisted overrides on top of the defaults from
-settings.py so that unset keys always fall back to the default.
-
-Modules imported:
-  json, pathlib     — standard library I/O
-  config.settings   — default constant values (all-caps names)
-
-Classes:
-  ConfigManager     — Singleton-style manager for runtime configuration state.
-
-Functions (ConfigManager):
-  load()            — Load JSON file, merge with defaults, return merged dict.
-  save(overrides)   — Write only the override dict (not full defaults) to JSON.
-  get(key, default) — Retrieve a single config value with optional fallback.
-  set(key, value)   — Update a key in memory and persist immediately.
-  all_settings()    — Return full dict (defaults + overrides merged).
-  reset()           — Delete the JSON file and reload defaults.
-
-Variables:
-  _config_path      — pathlib.Path to the JSON config file.
-  _overrides        — Dict of user-provided overrides loaded from disk.
-  _defaults         — Dict of all default values pulled from settings module.
-
-#todo Add config validation (jsonschema or manual) to catch invalid user edits.
-#todo Support config profiles (e.g. "indoor", "outdoor") with quick switching.
-#todo Watch config file for external edits and hot-reload.
-"""
-
 from __future__ import annotations
 
 import json
-import logging
+import os
 from pathlib import Path
-from typing import Any
+from threading import RLock
+from typing import Any, Optional, Union
 
-import config.settings as _settings
+from config import settings as _settings
 
-logger = logging.getLogger(__name__)
+
+_ENV_PREFIX = "NMS_"
+_SENTINEL = object()
+
+
+def _public_keys() -> list[str]:
+    return [k for k in vars(_settings).keys() if k.isupper() and not k.startswith("_")]
+
+
+def _coerce_to_default_type(default: Any, raw: str) -> Any:
+    """Coerce a string (env var) to the type of the default value.
+    Lists/dicts/Paths come through json or as Path; bool accepts truthy strings."""
+    if isinstance(default, bool):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(default, int) and not isinstance(default, bool):
+        return int(raw)
+    if isinstance(default, float):
+        return float(raw)
+    if isinstance(default, Path):
+        return Path(raw)
+    if isinstance(default, (list, dict, set)):
+        return json.loads(raw)
+    return raw  # str fallthrough
 
 
 class ConfigManager:
-    """
-    Manages persistent user configuration overrides stored as JSON on disk.
+    """Thread-safe layered settings access. Treat the result of get() as the
+    effective value at this moment; callers should not cache it."""
 
-    All values not explicitly overridden fall back to the constants defined in
-    config/settings.py.  Only user overrides are written to disk so the file
-    stays readable and compact.
+    def __init__(self,
+                 user_config_path: Optional[Union[str, Path]] = None,
+                 read_env: bool = True):
+        self._lock = RLock()
+        self._user_path = Path(user_config_path) if user_config_path else _settings.USER_CONFIG_PATH
+        self._read_env = read_env
+        self._json_overrides: dict[str, Any] = {}
+        self._runtime_overrides: dict[str, Any] = {}
+        self._reload_json()
 
-    Attributes:
-        _config_path (Path): Path to the JSON config file on disk.
-        _overrides   (dict): Currently loaded user override values.
-        _defaults    (dict): Default values extracted from settings.py module.
-    """
+    # ── Public API ───────────────────────────────────────────────────────
 
-    def __init__(self, config_path: Path | None = None) -> None:
-        """
-        Initialise the ConfigManager.
-
-        Args:
-            config_path: Optional explicit path to the JSON config file.
-                         Defaults to CALIBRATION_FILE from settings.
-        """
-        self._config_path: Path = config_path or _settings.CONFIG_FILE
-        self._overrides: dict[str, Any] = {}
-        self._defaults: dict[str, Any] = self._extract_defaults()
-        self.load()
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Private helpers
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _extract_defaults(self) -> dict[str, Any]:
-        """
-        Extract all upper-case names from settings.py as the default dict.
-
-        Returns:
-            dict mapping setting name → default value for every constant
-            defined in config/settings.py.
-        """
-        return {
-            k: v
-            for k, v in vars(_settings).items()
-            if k.isupper() and not k.startswith("_")
-        }
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def load(self) -> dict[str, Any]:
-        """
-        Load user overrides from the JSON config file on disk.
-
-        Creates the parent directory and an empty JSON file if they do not
-        exist yet.  Merges overrides on top of defaults.
-
-        Returns:
-            Merged configuration dict (defaults overridden by user values).
-        """
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._config_path.exists():
-            try:
-                with self._config_path.open("r", encoding="utf-8") as fh:
-                    self._overrides = json.load(fh)
-                logger.debug("Config loaded from %s", self._config_path)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Could not read config file (%s); using defaults.", exc)
-                self._overrides = {}
-        else:
-            self._overrides = {}
-            self._persist()
-        return self.all_settings()
-
-    def save(self, overrides: dict[str, Any]) -> None:
-        """
-        Replace the current overrides with the supplied dict and persist.
-
-        Args:
-            overrides: Dict of setting keys → override values.
-        """
-        self._overrides = overrides
-        self._persist()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        Return the value for *key*, checking overrides first then defaults.
-
-        Args:
-            key:     Setting name (typically an upper-case constant name).
-            default: Fallback if key is present in neither overrides nor defaults.
-
-        Returns:
-            The resolved value for the key.
-        """
-        if key in self._overrides:
-            return self._overrides[key]
-        return self._defaults.get(key, default)
+    def get(self, key: str, default: Any = _SENTINEL) -> Any:
+        with self._lock:
+            if key in self._runtime_overrides:
+                return self._runtime_overrides[key]
+            if self._read_env:
+                env_val = os.environ.get(_ENV_PREFIX + key)
+                if env_val is not None:
+                    base = getattr(_settings, key, None)
+                    try:
+                        return _coerce_to_default_type(base, env_val) if base is not None else env_val
+                    except (ValueError, json.JSONDecodeError):
+                        return env_val
+            if key in self._json_overrides:
+                return self._json_overrides[key]
+            if hasattr(_settings, key):
+                return getattr(_settings, key)
+            if default is _SENTINEL:
+                raise KeyError(f"unknown setting: {key}")
+            return default
 
     def set(self, key: str, value: Any) -> None:
-        """
-        Update a single key in the overrides dict and immediately persist.
+        """Set a runtime override. Refuses for keys in RESTART_REQUIRED."""
+        with self._lock:
+            if key in _settings.RESTART_REQUIRED:
+                raise ValueError(
+                    f"{key} requires a restart to change; edit user config or env var")
+            if not hasattr(_settings, key):
+                raise KeyError(f"unknown setting: {key}")
+            self._runtime_overrides[key] = value
 
-        Args:
-            key:   Setting name.
-            value: New value to store.
-        """
-        self._overrides[key] = value
-        self._persist()
-        logger.debug("Config updated: %s = %r", key, value)
+    def is_runtime_mutable(self, key: str) -> bool:
+        return hasattr(_settings, key) and key not in _settings.RESTART_REQUIRED
 
-    def all_settings(self) -> dict[str, Any]:
-        """
-        Return the fully merged configuration (defaults + overrides).
+    def reload(self) -> None:
+        """Re-read user JSON. Runtime overrides survive."""
+        with self._lock:
+            self._reload_json()
 
-        Returns:
-            Dict with all settings, user overrides taking precedence.
-        """
-        merged = dict(self._defaults)
-        merged.update(self._overrides)
-        return merged
+    def save_user_config(self, overrides: dict[str, Any]) -> None:
+        """Write a JSON override file at USER_CONFIG_PATH. Pass an empty dict
+        to clear all JSON overrides."""
+        with self._lock:
+            self._user_path.parent.mkdir(parents=True, exist_ok=True)
+            serialized = {k: _to_jsonable(v) for k, v in overrides.items()}
+            self._user_path.write_text(json.dumps(serialized, indent=2))
+            self._json_overrides = dict(overrides)
 
-    def reset(self) -> None:
-        """
-        Delete the JSON config file and reload pure defaults.
-        """
-        if self._config_path.exists():
-            self._config_path.unlink()
-            logger.info("Config reset — deleted %s", self._config_path)
-        self._overrides = {}
+    def all(self) -> dict[str, Any]:
+        """Snapshot of effective values for every public setting."""
+        return {k: self.get(k) for k in _public_keys()}
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Internal persistence
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── Internal ─────────────────────────────────────────────────────────
 
-    def _persist(self) -> None:
-        """Write the current overrides dict (not full defaults) to JSON."""
+    def _reload_json(self) -> None:
+        if not self._user_path.exists():
+            self._json_overrides = {}
+            return
         try:
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._config_path.open("w", encoding="utf-8") as fh:
-                # Convert Path objects to strings for JSON serialisation
-                serialisable = {
-                    k: (str(v) if isinstance(v, Path) else v)
-                    for k, v in self._overrides.items()
-                }
-                json.dump(serialisable, fh, indent=2)
-        except OSError as exc:
-            logger.error("Failed to write config: %s", exc)
+            raw = json.loads(self._user_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            self._json_overrides = {}
+            return
+        if not isinstance(raw, dict):
+            self._json_overrides = {}
+            return
+        # Only keep keys that exist in settings.py — silent ignore for unknown.
+        self._json_overrides = {k: v for k, v in raw.items() if hasattr(_settings, k)}
+
+
+def _to_jsonable(v: Any) -> Any:
+    if isinstance(v, Path):
+        return str(v)
+    if isinstance(v, set):
+        return sorted(v)
+    return v
