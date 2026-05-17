@@ -185,6 +185,26 @@ def test_status_poll_emits_events():
     assert received and received[0].battery_percent == 77
 
 
+def test_set_status_sink_enables_polling():
+    """set_status_sink (used by SensorManager) arms the poller, same as the
+    on_status constructor arg."""
+    ev = GoProStatusEvent(
+        timestamp=1.0, reachable=True, battery_percent=50,
+        system_hot=False, system_busy=False,
+        preview_stream_active=True, thermal_throttle=False)
+    received: list[GoProStatusEvent] = []
+    cam = GoProSensor(
+        control=FakeControlWithState(ev),
+        capture_factory=FakeCapture,
+        status_poll_interval_s=0.01)
+    cam.set_status_sink(received.append)       # registered before open()
+
+    assert cam.open() is True
+    time.sleep(0.05)
+    cam.close()
+    assert received and received[0].battery_percent == 50
+
+
 def test_status_poll_emits_unreachable_when_state_is_none():
     received: list[GoProStatusEvent] = []
     cam = GoProSensor(

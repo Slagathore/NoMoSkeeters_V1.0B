@@ -82,6 +82,13 @@ class GoProSensor(Sensor):
         self._status_stop = threading.Event()
         self._status_thread: Optional[threading.Thread] = None
 
+    def set_status_sink(self, on_status: Optional[StatusCallback]) -> None:
+        """Register (or clear) the GoProStatusEvent callback. Must be called
+        BEFORE open() — open() starts the status-poll thread, which only runs
+        when a sink is present. SensorManager uses this to route status to the
+        bus; a direct caller can also pass on_status= to the constructor."""
+        self._on_status = on_status
+
     # ── Identity / capabilities ──────────────────────────────────────────
 
     @property

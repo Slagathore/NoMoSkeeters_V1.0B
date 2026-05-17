@@ -61,9 +61,10 @@ def _progress(idx: int, total: int, obs) -> None:
               f"{obs.y_norm:.3f})  conf={obs.confidence:.2f}")
 
 
-def _open_camera(kind: str, index: int):
+def _open_camera(kind: str, index: int, gopro_ip: str):
     if kind == "gopro":
-        cam = GoProSensor(control=GoProInterface())   # HTTP start + keep-alive
+        # HTTP start + keep-alive over the camera's IP (USB-tethered = .51).
+        cam = GoProSensor(control=GoProInterface(ip=gopro_ip))
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -75,6 +76,10 @@ def main(argv=None) -> int:
     parser.add_argument("--src-ip", default="auto")
     parser.add_argument("--camera", choices=["local", "gopro"], default="local")
     parser.add_argument("--cam-index", type=int, default=0)
+    parser.add_argument("--gopro-ip", default="10.5.5.9",
+                        help="GoPro HTTP API IP. USB-tethered is 172.X.Y.51 "
+                             "(run Find-GoPro to discover); 10.5.5.9 is the "
+                             "WiFi-AP-mode fallback.")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -95,7 +100,7 @@ def main(argv=None) -> int:
         cube.disconnect()
         return 1
 
-    camera = _open_camera(args.camera, args.cam_index)
+    camera = _open_camera(args.camera, args.cam_index, args.gopro_ip)
     if camera is None:
         print(f"FAIL: could not open {args.camera} camera")
         cube.disconnect()
@@ -122,15 +127,19 @@ def main(argv=None) -> int:
               f"residual_galvo={mapper.residual_galvo:.1f}")
 
         # Multi-depth validation — operator repositions the target each depth.
-        depths = settings.CALIBRATION_VALIDATION_DEPTHS_M
+        # Depths are shown in the operator's units (CALIBRATION_DEPTH_UNITS);
+        # the mapper math runs in metres (CALIBRATION_VALIDATION_DEPTHS_M).
+        unit = settings.CALIBRATION_DEPTH_UNITS
         all_targets = []
-        for depth in depths:
-            input(f"\nPlace the calibration target at {depth:.1f} m, "
+        for disp, depth_m in zip(settings.CALIBRATION_VALIDATION_DEPTHS,
+                                 settings.CALIBRATION_VALIDATION_DEPTHS_M):
+            input(f"\nPlace the calibration target at {disp:.1f} {unit}, "
                   f"then press Enter...")
-            targets = live_validation_sweep(cube, camera, depth,
+            targets = live_validation_sweep(cube, camera, depth_m,
                                             pattern=args.pattern,
                                             on_point=_progress)
-            print(f"  captured {len(targets)} validation points at {depth} m")
+            print(f"  captured {len(targets)} validation points "
+                  f"at {disp:.1f} {unit}")
             all_targets.extend(targets)
 
         result = validate_multi_depth(mapper, all_targets)
@@ -138,8 +147,9 @@ def main(argv=None) -> int:
         mapper.save(run.json_path)
 
         print("\n" + "-" * 60)
-        for depth, resid in sorted(result.per_depth_residual_norm.items()):
-            print(f"  depth {depth:.1f} m : residual_norm={resid:.4f}")
+        for depth_m, resid in sorted(result.per_depth_residual_norm.items()):
+            disp = depth_m / settings.FT_TO_M if unit == "ft" else depth_m
+            print(f"  depth {disp:>5.1f} {unit} : residual_norm={resid:.4f}")
         print(f"  max residual : {result.max_residual_norm:.4f}  "
               f"(threshold {settings.CALIBRATION_MAX_RESIDUAL_NORM})")
         print(f"  calibration  : {run.json_path}")

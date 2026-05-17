@@ -88,8 +88,14 @@ TRACKER_MODE: str = "kalman_norm_dt"   # kalman_pixel | kalman_norm_dt | kalman_
 TRACKER_MAX_DISAPPEARED: int = 8
 TRACKER_MAX_COAST_FRAMES: int = 30
 TRACKER_MAX_DISTANCE_NORM: float = 0.06
-TRACKER_KALMAN_PROC_NOISE: float = 0.1
-TRACKER_KALMAN_MEAS_NOISE: float = 2.0
+# Kalman noise — variances in NORM space (0..1 coords); the tracker tracks
+# in norm space for every mode. Both were pixel-scaled (0.1 / 2.0), which
+# made R ≫ P and over-smoothed every track. Norm-space derivation:
+#   PROC : unmodeled mosquito accel per step, ~0.003 norm → variance ~1e-5
+#   MEAS : detection-centroid jitter, ~2-3 px on 1080p → ~0.0015 norm → ~2e-6
+# Starting points — verify against live tracker behaviour during Step 11.
+TRACKER_KALMAN_PROC_NOISE: float = 1e-5
+TRACKER_KALMAN_MEAS_NOISE: float = 2e-6
 TRACKER_CONFIRMATION_FRAMES: int = 3
 TRACKER_CONFIDENCE_DECAY: float = 0.9
 TRACKER_CONFIDENCE_BOOST: float = 1.05
@@ -116,7 +122,18 @@ CALIBRATION_WINDMILL_ARMS: int = 4
 
 # Multi-depth validation (amendment §8.6).
 CALIBRATION_MAX_RESIDUAL_NORM: float = 0.015
-CALIBRATION_VALIDATION_DEPTHS_M: list = [1.0, 2.5, 4.0]
+
+# Operator-facing validation depths. US tape measures read feet, so depths
+# are specified in CALIBRATION_DEPTH_UNITS ("ft" or "m"). The pipeline works
+# in metres internally — CALIBRATION_VALIDATION_DEPTHS_M below is DERIVED from
+# these; edit CALIBRATION_VALIDATION_DEPTHS, not the _M list.
+FT_TO_M: float = 0.3048
+CALIBRATION_DEPTH_UNITS: str = "ft"                       # "ft" | "m"
+CALIBRATION_VALIDATION_DEPTHS: list = [3.0, 8.0, 13.0]    # in CALIBRATION_DEPTH_UNITS
+CALIBRATION_VALIDATION_DEPTHS_M: list = [
+    round(d * FT_TO_M, 4) if CALIBRATION_DEPTH_UNITS == "ft" else float(d)
+    for d in CALIBRATION_VALIDATION_DEPTHS
+]
 CALIBRATION_DRAGLINE_MULTI_SPEED: bool = True
 CALIBRATION_DRAGLINE_SPEEDS: list = [0.05, 0.20, 0.50, 1.00]
 LATENCY_SOFTWARE_LAG_MS: float = 0.0   # populated by drag-line calibration

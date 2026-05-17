@@ -15,11 +15,15 @@ import threading
 import time
 from typing import Callable, Optional
 
+from events.schemas import GoProStatusEvent
 from sensors.base import Sensor, SensorFrame
 
 _log = logging.getLogger(__name__)
 
 FrameSink = Callable[[SensorFrame], None]
+# Status events are tagged with their sensor_id since the event payload
+# (GoProStatusEvent) does not carry one — safety needs to know the source.
+StatusSink = Callable[[str, GoProStatusEvent], None]
 
 # Idle nap when a non-blocking read() returns None, so a stalled sensor does
 # not spin a core.
@@ -61,12 +65,15 @@ class _SensorWorker(threading.Thread):
 class SensorManager:
     """Owns the active sensors and their worker threads."""
 
-    def __init__(self, frame_sink: Optional[FrameSink] = None):
+    def __init__(self, frame_sink: Optional[FrameSink] = None,
+                 status_sink: Optional[StatusSink] = None):
         self._sensors: dict[str, Sensor] = {}
         self._workers: dict[str, _SensorWorker] = {}
         self._latest: dict[str, SensorFrame] = {}
+        self._latest_status: dict[str, GoProStatusEvent] = {}
         self._lock = threading.Lock()
         self._sink = frame_sink
+        self._status_sink = status_sink
 
     @property
     def sensor_ids(self) -> list[str]:
@@ -78,6 +85,12 @@ class SensorManager:
         if sensor.sensor_id in self._sensors:
             _log.warning("sensor %s already registered", sensor.sensor_id)
             return False
+        # Route any sensor status (e.g. GoPro /camera/state) onto the bus.
+        # Must happen before open() — open() starts the status-poll thread.
+        if hasattr(sensor, "set_status_sink"):
+            sid = sensor.sensor_id
+            sensor.set_status_sink(
+                lambda ev, sid=sid: self._dispatch_status(sid, ev))
         if not sensor.open():
             _log.error("sensor %s failed to open", sensor.sensor_id)
             return False
@@ -96,12 +109,19 @@ class SensorManager:
         sensor = self._sensors.pop(sensor_id, None)
         if sensor is not None:
             sensor.close()
-        self._latest.pop(sensor_id, None)
+        with self._lock:
+            self._latest.pop(sensor_id, None)
+            self._latest_status.pop(sensor_id, None)
 
     def latest_frame(self, sensor_id: str) -> Optional[SensorFrame]:
         """Most recent frame seen from a sensor, or None."""
         with self._lock:
             return self._latest.get(sensor_id)
+
+    def latest_status(self, sensor_id: str) -> Optional[GoProStatusEvent]:
+        """Most recent status event from a sensor, or None."""
+        with self._lock:
+            return self._latest_status.get(sensor_id)
 
     def stop_all(self) -> None:
         for sensor_id in list(self._sensors):
@@ -114,3 +134,10 @@ class SensorManager:
             self._latest[frame.sensor_id] = frame
         if self._sink is not None:
             self._sink(frame)
+
+    def _dispatch_status(self, sensor_id: str,
+                         event: GoProStatusEvent) -> None:
+        with self._lock:
+            self._latest_status[sensor_id] = event
+        if self._status_sink is not None:
+            self._status_sink(sensor_id, event)

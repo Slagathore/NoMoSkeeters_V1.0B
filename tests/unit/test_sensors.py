@@ -210,3 +210,34 @@ def test_sensor_manager_add_fails_if_sensor_wont_open():
             return False
     mgr = SensorManager()
     assert mgr.add_sensor(DeadSensor("dead")) is False
+
+
+def test_sensor_manager_routes_status_events():
+    """A sensor exposing set_status_sink has its status routed to the bus,
+    tagged with sensor_id, and cached for latest_status()."""
+    from events.schemas import GoProStatusEvent
+
+    ev = GoProStatusEvent(
+        timestamp=1.0, reachable=True, battery_percent=64,
+        system_hot=False, system_busy=False,
+        preview_stream_active=True, thermal_throttle=False)
+
+    class StatusSensor(FakeSensor):
+        _status_sink = None
+
+        def set_status_sink(self, sink):
+            self._status_sink = sink
+
+        def open(self):
+            if self._status_sink is not None:
+                self._status_sink(ev)          # emit once on open
+            return True
+
+    received: list = []
+    mgr = SensorManager(status_sink=lambda sid, e: received.append((sid, e)))
+    assert mgr.add_sensor(StatusSensor("gopro")) is True
+    assert received == [("gopro", ev)]         # tagged + forwarded
+    assert mgr.latest_status("gopro") is ev    # cached
+    mgr.remove_sensor("gopro")
+    assert mgr.latest_status("gopro") is None  # cleared on removal
+    mgr.stop_all()
