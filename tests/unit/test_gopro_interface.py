@@ -185,6 +185,36 @@ def test_status_poll_emits_events():
     assert received and received[0].battery_percent == 77
 
 
+def test_decoder_ffmpeg_builds_subprocess_capture(monkeypatch):
+    """GoProSensor(decoder='ffmpeg') routes its frame source through
+    FfmpegStreamCapture instead of cv2.VideoCapture."""
+    import sensors.ffmpeg_capture as ffmod
+
+    built: list[str] = []
+
+    class FakeFfmpeg:
+        def __init__(self, url):
+            built.append(url)
+
+        def isOpened(self):
+            return True
+
+        def read(self):
+            return (True, np.zeros((2, 4, 3), dtype=np.uint8))
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(ffmod, "FfmpegStreamCapture", FakeFfmpeg)
+    cam = GoProSensor(decoder="ffmpeg", stream_url="udp://0.0.0.0:8554")
+
+    assert cam.open() is True
+    assert built == ["udp://0.0.0.0:8554"]      # subprocess decoder selected
+    frame = cam.read()
+    assert frame is not None and frame.rgb is not None
+    cam.close()
+
+
 def test_set_status_sink_enables_polling():
     """set_status_sink (used by SensorManager) arms the poller, same as the
     on_status constructor arg."""

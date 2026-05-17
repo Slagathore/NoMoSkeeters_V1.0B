@@ -1,57 +1,57 @@
-# gp_py_smoke_subprocess.py
-#
-# Fallback smoke test: pull GoPro preview frames by piping ffmpeg's raw
-# output through a subprocess (HARDWARE_FINDINGS.md §7.2) — the path to use
-# if cv2.VideoCapture cannot decode the HEVC stream directly.
-import subprocess
+#!/usr/bin/env python3
+"""gp_py_smoke_subprocess.py — smoke test for the subprocess-ffmpeg GoPro
+decoder.
+
+Exercises sensors/ffmpeg_capture.FfmpegStreamCapture — the very decoder that
+GoProSensor(decoder="ffmpeg") feeds the targeting pipeline with. If this
+PASSes, the subprocess decoder is good to use as the live video source.
+
+PREREQUISITE: the GoPro preview stream must be running and nothing else
+bound to UDP 8554 (single-consumer — HARDWARE_FINDINGS.md §3.2). Start it
+with tools/gopro_stream_helper.ps1 (Start-GoProStream) first.
+"""
+import sys
 import time
+from pathlib import Path
 
-WIDTH = 1920
-HEIGHT = 1080
-FRAME_SIZE = WIDTH * HEIGHT * 3  # BGR24
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-cmd = [
-    "ffmpeg",
-    "-fflags", "nobuffer",
-    "-flags", "low_delay",
-    "-framedrop",
-    "-i", "udp://0.0.0.0:8554",
-    "-f", "rawvideo",
-    "-pix_fmt", "bgr24",
-    "-loglevel", "error",
-    "-",
-]
+from sensors.ffmpeg_capture import FfmpegStreamCapture   # noqa: E402
 
-print("Spawning ffmpeg subprocess...")
-proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10**8)
-assert proc.stdout is not None  # guaranteed non-None by stdout=subprocess.PIPE
+URL = "udp://0.0.0.0:8554"
+DURATION_S = 10
+
+print(f"Opening {URL} via subprocess ffmpeg ...")
+cap = FfmpegStreamCapture(URL)
+if not cap.isOpened():
+    print("FAIL: ffmpeg subprocess did not start")
+    raise SystemExit(1)
 
 frame_count = 0
-start = time.monotonic()
 first_frame_at: float | None = None
+start = time.monotonic()
+deadline = start + DURATION_S
 
-print("Reading frames for 10 seconds...")
-deadline = start + 10
+print(f"Reading frames for {DURATION_S} seconds...")
 while time.monotonic() < deadline:
-    raw = proc.stdout.read(FRAME_SIZE)
-    if len(raw) != FRAME_SIZE:
-        print(f"Short read: {len(raw)} bytes — stream ended or broken")
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        print("Stream ended or broke before the deadline")
         break
-    # A full-size read is the only frame check needed; the raw bytes can be
-    # wrapped with np.frombuffer(...).reshape((HEIGHT, WIDTH, 3)) downstream.
     if first_frame_at is None:
         first_frame_at = time.monotonic()
         print(f"First frame at {first_frame_at - start:.2f}s, "
-              f"shape=({HEIGHT}, {WIDTH}, 3)")
+              f"shape={frame.shape}, dtype={frame.dtype}")
     frame_count += 1
 
-proc.terminate()
-proc.wait(timeout=2)
+cap.release()
 
-if frame_count > 0:
-    assert first_frame_at is not None  # frame_count > 0 ⟹ set in the loop
-    elapsed = time.monotonic() - first_frame_at
-    print(f"PASS: {frame_count} frames in {elapsed:.1f}s "
-          f"= {frame_count / elapsed:.1f} fps")
-else:
-    print("FAIL: zero frames received via subprocess ffmpeg")
+if frame_count == 0:
+    print("FAIL: zero frames received. Check the stream is running and that "
+          "nothing else holds UDP 8554 (netstat -ano | findstr 8554).")
+    raise SystemExit(2)
+
+assert first_frame_at is not None  # frame_count > 0 ⟹ set in the loop
+elapsed = time.monotonic() - first_frame_at
+print(f"PASS: {frame_count} frames in {elapsed:.1f}s "
+      f"= {frame_count / elapsed:.1f} fps")

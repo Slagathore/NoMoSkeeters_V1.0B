@@ -61,10 +61,11 @@ def _progress(idx: int, total: int, obs) -> None:
               f"{obs.y_norm:.3f})  conf={obs.confidence:.2f}")
 
 
-def _open_camera(kind: str, index: int, gopro_ip: str):
+def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str):
     if kind == "gopro":
         # HTTP start + keep-alive over the camera's IP (USB-tethered = .51).
-        cam = GoProSensor(control=GoProInterface(ip=gopro_ip))
+        cam = GoProSensor(control=GoProInterface(ip=gopro_ip),
+                          decoder=decoder)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -80,6 +81,11 @@ def main(argv=None) -> int:
                         help="GoPro HTTP API IP. USB-tethered is 172.X.Y.51 "
                              "(run Find-GoPro to discover); 10.5.5.9 is the "
                              "WiFi-AP-mode fallback.")
+    parser.add_argument("--decoder", choices=["opencv", "ffmpeg"],
+                        default="opencv",
+                        help="GoPro stream decoder. 'ffmpeg' pipes a "
+                             "dedicated ffmpeg subprocess — use it if cv2 "
+                             "cannot decode the Hero 13 HEVC stream.")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -100,7 +106,8 @@ def main(argv=None) -> int:
         cube.disconnect()
         return 1
 
-    camera = _open_camera(args.camera, args.cam_index, args.gopro_ip)
+    camera = _open_camera(args.camera, args.cam_index, args.gopro_ip,
+                          args.decoder)
     if camera is None:
         print(f"FAIL: could not open {args.camera} camera")
         cube.disconnect()

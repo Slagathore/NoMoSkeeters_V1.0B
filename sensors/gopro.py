@@ -62,6 +62,7 @@ class GoProSensor(Sensor):
                  control: Optional[GoProControl] = None,
                  timestamp_uncertainty_ms: float = 20.0,
                  capture_factory: Optional[Callable[[], object]] = None,
+                 decoder: str = "opencv",
                  capture_options: str = _DEFAULT_CAPTURE_OPTIONS,
                  on_status: Optional[StatusCallback] = None,
                  status_poll_interval_s: float = _STATUS_POLL_INTERVAL_S):
@@ -69,8 +70,8 @@ class GoProSensor(Sensor):
         self._role = role
         self._control = control
         self._ts_uncertainty = timestamp_uncertainty_ms
-        self._capture_factory = capture_factory or (
-            lambda: cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG))
+        self._decoder = decoder
+        self._capture_factory = capture_factory or self._default_capture
         self._capture_options = capture_options
         self._on_status = on_status
         self._status_interval_s = status_poll_interval_s
@@ -81,6 +82,19 @@ class GoProSensor(Sensor):
         self._keepalive_thread: Optional[threading.Thread] = None
         self._status_stop = threading.Event()
         self._status_thread: Optional[threading.Thread] = None
+
+    def _default_capture(self):
+        """Build the frame source for the configured decoder.
+
+        "opencv" → cv2.VideoCapture on the FFmpeg backend (default).
+        "ffmpeg" → FfmpegStreamCapture, a subprocess-piped ffmpeg decoder —
+                   the path to use when cv2 cannot decode the Hero 13's HEVC
+                   preview. Both expose the same isOpened/read/release API.
+        """
+        if self._decoder == "ffmpeg":
+            from sensors.ffmpeg_capture import FfmpegStreamCapture
+            return FfmpegStreamCapture(self._stream_url)
+        return cv2.VideoCapture(self._stream_url, cv2.CAP_FFMPEG)
 
     def set_status_sink(self, on_status: Optional[StatusCallback]) -> None:
         """Register (or clear) the GoProStatusEvent callback. Must be called
@@ -125,9 +139,11 @@ class GoProSensor(Sensor):
         if self._control is not None and not self._control.start_preview():
             _log.error("gopro: start_preview() failed")
             return False
-        # Low-latency ffmpeg options must be in the environment BEFORE the
-        # VideoCapture is constructed (HARDWARE_FINDINGS.md §3.2, §7.2).
-        if self._capture_options:
+        # OpenCV's FFmpeg backend reads its low-latency options from the
+        # environment, and must see them BEFORE VideoCapture is constructed
+        # (HARDWARE_FINDINGS.md §3.2, §7.2). The "ffmpeg" decoder builds its
+        # own ffmpeg command, so this does not apply to it.
+        if self._decoder == "opencv" and self._capture_options:
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = self._capture_options
         cap = self._capture_factory()
         if cap is None or not cap.isOpened():
