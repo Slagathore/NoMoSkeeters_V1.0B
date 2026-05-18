@@ -13,8 +13,9 @@ Two streaming modes (set via `mode=`):
     feature and did not deliver UDP over USB on the Hero 13; kept only as
     a fallback for other models.
 
-Webcam mode needs no client keep-alive. The legacy `_GPHD_` datagram is
-kept for preview mode only.
+Webcam mode is kept alive with the documented HTTP keep-alive (the stream
+otherwise stops after ~20-30 s). The legacy `_GPHD_` datagram is kept for
+preview mode only.
 """
 from __future__ import annotations
 
@@ -165,11 +166,14 @@ class GoProInterface:
     def keep_alive(self) -> bool:
         """Keep the stream alive.
 
-        Webcam mode needs no client keep-alive — it runs until stopped — so
-        this is a no-op there. Preview mode sends the legacy `_GPHD_` packet.
+        Webcam mode pings the documented HTTP keep-alive — without it the
+        Hero 13 webcam stream stops feeding after ~20-30 s (observed: every
+        recording truncated at ~20 s). Preview mode sends the legacy
+        `_GPHD_` UDP packet.
         """
         if self._mode == "webcam":
-            return True
+            return self._http_get(self._url("/gopro/camera/keep_alive"),
+                                  self._timeout)
         if self._ka_sock is None:
             self._ka_sock = self._socket_factory()
         try:

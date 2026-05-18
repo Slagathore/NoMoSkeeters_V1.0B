@@ -68,10 +68,12 @@ def test_webcam_stop_hits_stop_then_exit():
     assert log[-1].endswith("/gopro/webcam/exit")
 
 
-def test_webcam_keep_alive_is_noop():
+def test_webcam_keep_alive_pings_http_endpoint():
+    log: list[str] = []
     sock = FakeUDP()
-    assert _iface(sock=sock).keep_alive() is True
-    assert sock.sent == []                   # webcam needs no client keep-alive
+    assert _iface(http_log=log, sock=sock).keep_alive() is True
+    assert log[-1].endswith("/gopro/camera/keep_alive")
+    assert sock.sent == []                   # HTTP keep-alive, not a UDP packet
 
 
 def test_start_false_on_http_failure():
