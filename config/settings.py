@@ -113,6 +113,13 @@ CALIBRATION_GRID_ROWS: int = 5
 CALIBRATION_GRID_COLS: int = 5
 CALIBRATION_DETECTION_MODE: str = "auto"  # "auto" | "manual" | "hybrid"
 CALIBRATION_DOT_THRESHOLD: int = 200
+
+# Live-calibration dwell timing. The laser is held STEADY at each galvo
+# point for HOLD_S seconds — a single 0.1 s flash is far shorter than the
+# USB GoPro feed's pipeline latency, so detection must wait SETTLE_S for
+# the lit dot to actually appear in the frames before reading it.
+CALIBRATION_DWELL_SETTLE_S: float = 1.0
+CALIBRATION_DWELL_HOLD_S: float = 1.8
 CALIBRATION_LASER_R: int = 0xFFF
 CALIBRATION_LASER_G: int = 0xFFF
 CALIBRATION_LASER_B: int = 0xFFF

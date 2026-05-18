@@ -3,6 +3,8 @@ fake cube + fake camera (the camera renders the dot wherever the cube was
 last told to point, via a ground-truth homography)."""
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
 
@@ -38,6 +40,9 @@ class _BenchCamera:
         self._blank = blank
 
     def read(self):
+        # A real camera paces read() at the frame interval; mimic that so the
+        # _capture_dot hold-loop is paced instead of spinning the CPU.
+        time.sleep(0.02)
         img = np.full((self._size, self._size, 3), 20, dtype=np.uint8)
         dac = self._state.get("galvo_dac")
         if dac is not None and not self._blank:
@@ -64,7 +69,7 @@ def test_live_calibration_fits_and_saves(tmp_path):
     cube, camera, _ = _bench()
     run = run_live_calibration(cube, camera, pattern="grid",
                                sensor_id="gopro", out_dir=tmp_path,
-                               dwell_samples=1)
+                               dwell_samples=1, hold_s=0.05, settle_s=0.0)
     assert run.json_path.exists()
     assert run.mapper.n_points == 25                 # full 5×5 grid detected
     # The fitted mapper recovers the bench's ground-truth homography well.
@@ -76,14 +81,14 @@ def test_live_calibration_raises_when_no_dots(tmp_path):
     import pytest
     with pytest.raises(RuntimeError):
         run_live_calibration(cube, camera, pattern="grid", out_dir=tmp_path,
-                             dwell_samples=1, max_attempts=2)
+                             dwell_samples=1, hold_s=0.05, settle_s=0.0)
 
 
 def test_live_calibration_reports_progress(tmp_path):
     cube, camera, _ = _bench()
     seen: list[int] = []
     run_live_calibration(cube, camera, pattern="grid", out_dir=tmp_path,
-                         dwell_samples=1,
+                         dwell_samples=1, hold_s=0.05, settle_s=0.0,
                          on_point=lambda i, n, obs: seen.append(i))
     assert seen == list(range(25))
 
@@ -93,11 +98,13 @@ def test_live_calibration_reports_progress(tmp_path):
 def test_live_validation_sweep_passes_for_good_calibration(tmp_path):
     cube, camera, _ = _bench()
     run = run_live_calibration(cube, camera, pattern="grid",
-                               out_dir=tmp_path, dwell_samples=1)
+                               out_dir=tmp_path, dwell_samples=1,
+                               hold_s=0.05, settle_s=0.0)
     targets = []
     for depth in (1.0, 2.5, 4.0):
-        targets.extend(live_validation_sweep(cube, camera, depth,
-                                             pattern="grid", dwell_samples=1))
+        targets.extend(live_validation_sweep(
+            cube, camera, depth, pattern="grid",
+            dwell_samples=1, hold_s=0.05, settle_s=0.0))
     assert len(targets) == 75                        # 25 points × 3 depths
     result = validate_multi_depth(run.mapper, targets)
     assert result.passed is True

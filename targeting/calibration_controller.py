@@ -212,33 +212,38 @@ def calibration_pattern_path(pattern: Optional[str] = None) -> list[Point]:
 
 def _capture_dot(cube, camera, detector: LaserDotDetector,
                  gx_dac: int, gy_dac: int, rgb: tuple[int, int, int],
-                 *, settle_frames: int, max_attempts: int,
-                 dwell_samples: int,
+                 *, hold_s: float, settle_s: float, dwell_samples: int,
                  on_frame: Optional[Callable] = None) -> Optional[DotObservation]:
-    """Hold the laser on one galvo coord, detect the dot in the camera.
+    """Hold the laser STEADY at one galvo coord, then detect the dot.
 
-    Re-streams the dwell each attempt because the cube scans its ringbuffer
-    out continuously — the dot is only lit while samples remain queued.
+    The dwell is re-streamed continuously for `hold_s` seconds so the dot
+    stays lit the whole time — a single 0.1 s flash is far shorter than the
+    camera pipeline latency (several hundred ms on the USB GoPro feed), so a
+    flash-then-read never sees the current point. Detection only starts
+    after `settle_s`, by which time the lit dot is guaranteed to be in the
+    frames; the highest-confidence observation over the window is returned.
+
     `on_frame`, if given, is called with every camera frame (rgb) — used by
-    the step11 script's --view option to show what the camera sees.
+    the step11 script's --view option.
     """
     r, g, b = rgb
     dwell = [LaserPoint(x=gx_dac, y=gy_dac, r=r, g=g, b=b)] * dwell_samples
-    for _ in range(max_attempts):
-        cube.send_frame(dwell, frame_num=0)
-        for _ in range(settle_frames):        # drop stale / in-flight frames
-            stale = camera.read()
-            if on_frame is not None and stale is not None and stale.rgb is not None:
-                on_frame(stale.rgb)
+    start = time.monotonic()
+    best: Optional[DotObservation] = None
+    while True:
+        cube.send_frame(dwell, frame_num=0)       # keep the ringbuffer fed
         frame = camera.read()
+        elapsed = time.monotonic() - start
         if frame is not None and frame.rgb is not None:
             if on_frame is not None:
                 on_frame(frame.rgb)
-            obs = detector.detect(frame.rgb)
-            if obs is not None:
-                return obs
-        time.sleep(0.01)
-    return None
+            if elapsed >= settle_s:               # latency cleared — dot is live
+                obs = detector.detect(frame.rgb)
+                if obs is not None and (
+                        best is None or obs.confidence > best.confidence):
+                    best = obs
+        if elapsed >= hold_s:
+            return best
 
 
 def run_live_calibration(cube, camera, *,
@@ -250,8 +255,8 @@ def run_live_calibration(cube, camera, *,
                          out_dir: Optional[Path] = None,
                          stream: str = "",
                          kinect_relative_pose: Optional[dict] = None,
-                         settle_frames: int = 2,
-                         max_attempts: int = 8,
+                         settle_s: Optional[float] = None,
+                         hold_s: Optional[float] = None,
                          dwell_samples: int = 3000,
                          on_point: Optional[PointCallback] = None,
                          on_frame: Optional[Callable] = None) -> CalibrationRun:
@@ -264,6 +269,10 @@ def run_live_calibration(cube, camera, *,
     """
     pattern = pattern or settings.CALIBRATION_PATTERN
     detector = detector or LaserDotDetector()
+    settle_s = (settings.CALIBRATION_DWELL_SETTLE_S if settle_s is None
+                else settle_s)
+    hold_s = (settings.CALIBRATION_DWELL_HOLD_S if hold_s is None
+              else hold_s)
     rgb = (settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
            settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
@@ -273,8 +282,7 @@ def run_live_calibration(cube, camera, *,
     for idx, (gx, gy) in enumerate(galvo_path):
         obs = _capture_dot(cube, camera, detector,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
-                           settle_frames=settle_frames,
-                           max_attempts=max_attempts,
+                           hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
                            on_frame=on_frame)
         if on_point is not None:
@@ -308,8 +316,8 @@ def run_live_calibration(cube, camera, *,
 def live_validation_sweep(cube, camera, depth_m: float, *,
                           pattern: Optional[str] = None,
                           detector: Optional[LaserDotDetector] = None,
-                          settle_frames: int = 2,
-                          max_attempts: int = 8,
+                          settle_s: Optional[float] = None,
+                          hold_s: Optional[float] = None,
                           dwell_samples: int = 3000,
                           on_point: Optional[PointCallback] = None,
                           on_frame: Optional[Callable] = None) -> list[TestTarget]:
@@ -318,6 +326,10 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
     before calling this."""
     pattern = pattern or settings.CALIBRATION_PATTERN
     detector = detector or LaserDotDetector()
+    settle_s = (settings.CALIBRATION_DWELL_SETTLE_S if settle_s is None
+                else settle_s)
+    hold_s = (settings.CALIBRATION_DWELL_HOLD_S if hold_s is None
+              else hold_s)
     rgb = (settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
            settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
@@ -326,8 +338,7 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
     for idx, (gx, gy) in enumerate(galvo_path):
         obs = _capture_dot(cube, camera, detector,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
-                           settle_frames=settle_frames,
-                           max_attempts=max_attempts,
+                           hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
                            on_frame=on_frame)
         if on_point is not None:
