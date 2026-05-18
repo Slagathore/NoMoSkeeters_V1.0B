@@ -23,7 +23,9 @@ class _BenchCube:
         self._state = state
 
     def send_frame(self, points, frame_num=0):
-        self._state["galvo_dac"] = (points[0].x, points[0].y)
+        p = points[0]
+        self._state["galvo_dac"] = (p.x, p.y)
+        self._state["lit"] = bool(p.r or p.g or p.b)   # blanked => no dot
         return True
 
     def _next_msg_num(self):
@@ -45,7 +47,7 @@ class _BenchCamera:
         time.sleep(0.02)
         img = np.full((self._size, self._size, 3), 20, dtype=np.uint8)
         dac = self._state.get("galvo_dac")
-        if dac is not None and not self._blank:
+        if dac is not None and self._state.get("lit") and not self._blank:
             gnorm = (dac[0] / 0xFFF, dac[1] / 0xFFF)
             s = apply_homography(self._h, [gnorm])[0]
             px = int(np.clip(s[0], 0, 1) * (self._size - 1))

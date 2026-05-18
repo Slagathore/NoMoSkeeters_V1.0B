@@ -113,6 +113,10 @@ CALIBRATION_GRID_ROWS: int = 5
 CALIBRATION_GRID_COLS: int = 5
 CALIBRATION_DETECTION_MODE: str = "auto"  # "auto" | "manual" | "hybrid"
 CALIBRATION_DOT_THRESHOLD: int = 200
+# Threshold for temporal-difference detection (laser-on minus laser-off).
+# The diff image is near-black except the dot, so this is low — it only
+# has to clear sensor/compression noise.
+CALIBRATION_DOT_DIFF_THRESHOLD: int = 40
 
 # Live-calibration dwell timing. The laser is held STEADY at each galvo
 # point for HOLD_S seconds — a single 0.1 s flash is far shorter than the

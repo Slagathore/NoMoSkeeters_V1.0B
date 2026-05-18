@@ -210,9 +210,36 @@ def calibration_pattern_path(pattern: Optional[str] = None) -> list[Point]:
     )
 
 
+def _capture_background(cube, camera, *, settle_s: float, dwell_samples: int,
+                        on_frame: Optional[Callable] = None,
+                        n_average: int = 5) -> Optional[np.ndarray]:
+    """Hold the laser blanked and capture an averaged laser-OFF frame — the
+    reference for temporal-difference detection. Averaging a few frames
+    knocks down sensor/compression noise.
+    """
+    blank = [LaserPoint(x=0, y=0, r=0, g=0, b=0)] * max(1, dwell_samples)
+    start = time.monotonic()
+    stack: list = []
+    while True:
+        cube.send_frame(blank, frame_num=0)
+        frame = camera.read()
+        elapsed = time.monotonic() - start
+        if frame is not None and frame.rgb is not None:
+            if on_frame is not None:
+                on_frame(frame.rgb)
+            if elapsed >= settle_s:
+                stack.append(frame.rgb.astype(np.float32))
+        if len(stack) >= n_average or elapsed >= settle_s + 3.0:
+            break
+    if not stack:
+        return None
+    return np.mean(stack, axis=0).astype(np.uint8)
+
+
 def _capture_dot(cube, camera, detector: LaserDotDetector,
                  gx_dac: int, gy_dac: int, rgb: tuple[int, int, int],
                  *, hold_s: float, settle_s: float, dwell_samples: int,
+                 background: Optional[np.ndarray] = None,
                  on_frame: Optional[Callable] = None) -> Optional[DotObservation]:
     """Hold the laser STEADY at one galvo coord, then detect the dot.
 
@@ -238,7 +265,9 @@ def _capture_dot(cube, camera, detector: LaserDotDetector,
             if on_frame is not None:
                 on_frame(frame.rgb)
             if elapsed >= settle_s:               # latency cleared — dot is live
-                obs = detector.detect(frame.rgb)
+                obs = (detector.detect_diff(frame.rgb, background)
+                       if background is not None
+                       else detector.detect(frame.rgb))
                 if obs is not None and (
                         best is None or obs.confidence > best.confidence):
                     best = obs
@@ -278,6 +307,10 @@ def run_live_calibration(cube, camera, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
+    # Laser-OFF reference for temporal-difference detection.
+    background = _capture_background(cube, camera, settle_s=settle_s,
+                                     dwell_samples=dwell_samples,
+                                     on_frame=on_frame)
 
     galvo_pts: list[Point] = []
     observed: list[Point] = []
@@ -286,6 +319,7 @@ def run_live_calibration(cube, camera, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
+                           background=background,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
@@ -337,6 +371,10 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
+    # Laser-OFF reference for temporal-difference detection.
+    background = _capture_background(cube, camera, settle_s=settle_s,
+                                     dwell_samples=dwell_samples,
+                                     on_frame=on_frame)
 
     targets: list[TestTarget] = []
     for idx, (gx, gy) in enumerate(galvo_path):
@@ -344,6 +382,7 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
+                           background=background,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
