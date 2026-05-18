@@ -1,0 +1,4 @@
+{
+  "//": "Markdown lint disabled repo-wide — the bootstrap docs and findings are quoted-verbatim canonical records, not prose to be reflowed for MD0xx rules.",
+  "default": false
+}
