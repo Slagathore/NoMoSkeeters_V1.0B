@@ -106,6 +106,11 @@ def main(argv=None) -> int:
     parser.add_argument("--single", action="store_true",
                         help="run one calibration sweep only — skip the "
                              "multi-depth validation (no target repositioning).")
+    parser.add_argument("--laser-power", type=float, default=100.0,
+                        metavar="PCT",
+                        help="calibration laser brightness, percent of full "
+                             "(default 100). Lower (e.g. 5) gives a crisp dot "
+                             "instead of an overexposed bloom.")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -150,6 +155,11 @@ def main(argv=None) -> int:
         print("aborted by operator")
         return 0
 
+    # Calibration laser colour, scaled by --laser-power (0xFFF = full).
+    _lp = max(0, min(0xFFF, int(round(0xFFF * args.laser_power / 100.0))))
+    laser_rgb = (_lp, _lp, _lp)
+    print(f"calibration laser power: {args.laser_power:.0f}%  (rgb={_lp})")
+
     rc = 1
     try:
         cube.enable_output()
@@ -158,7 +168,7 @@ def main(argv=None) -> int:
             run = run_live_calibration(
                 cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
                 scene=args.scene, mount_tilt_config=args.mount_config,
-                on_point=_progress, on_frame=on_frame)
+                laser_rgb=laser_rgb, on_point=_progress, on_frame=on_frame)
         except (ValueError, RuntimeError) as exc:
             print(f"\nsweep finished but the homography fit failed: {exc}")
             print("This usually means the camera never cleanly saw the laser "
@@ -186,6 +196,7 @@ def main(argv=None) -> int:
                       f"then press Enter...")
                 targets = live_validation_sweep(cube, camera, depth_m,
                                                 pattern=args.pattern,
+                                                laser_rgb=laser_rgb,
                                                 on_point=_progress,
                                                 on_frame=on_frame)
                 print(f"  captured {len(targets)} validation points "

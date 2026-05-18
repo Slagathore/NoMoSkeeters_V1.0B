@@ -258,6 +258,7 @@ def run_live_calibration(cube, camera, *,
                          settle_s: Optional[float] = None,
                          hold_s: Optional[float] = None,
                          dwell_samples: int = 3000,
+                         laser_rgb: Optional[tuple] = None,
                          on_point: Optional[PointCallback] = None,
                          on_frame: Optional[Callable] = None) -> CalibrationRun:
     """Calibrate against the real cube + camera (Step 11).
@@ -273,8 +274,9 @@ def run_live_calibration(cube, camera, *,
                 else settle_s)
     hold_s = (settings.CALIBRATION_DWELL_HOLD_S if hold_s is None
               else hold_s)
-    rgb = (settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
-           settings.CALIBRATION_LASER_B)
+    rgb = laser_rgb if laser_rgb is not None else (
+        settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
+        settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
 
     galvo_pts: list[Point] = []
@@ -319,6 +321,7 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                           settle_s: Optional[float] = None,
                           hold_s: Optional[float] = None,
                           dwell_samples: int = 3000,
+                          laser_rgb: Optional[tuple] = None,
                           on_point: Optional[PointCallback] = None,
                           on_frame: Optional[Callable] = None) -> list[TestTarget]:
     """Sweep the pattern once at a known depth; return TestTargets for
@@ -330,8 +333,9 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                 else settle_s)
     hold_s = (settings.CALIBRATION_DWELL_HOLD_S if hold_s is None
               else hold_s)
-    rgb = (settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
-           settings.CALIBRATION_LASER_B)
+    rgb = laser_rgb if laser_rgb is not None else (
+        settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
+        settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
 
     targets: list[TestTarget] = []
