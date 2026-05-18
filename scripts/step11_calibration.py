@@ -65,12 +65,12 @@ _FOV_CODES = {"default": None, "wide": 0, "linear": 4, "superview": 3}
 
 
 def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
-                 fov: object):
+                 fov: object, record: object):
     if kind == "gopro":
         # HTTP control over the camera's IP (USB-tethered = .51).
         cam = GoProSensor(
             control=GoProInterface(ip=gopro_ip, webcam_fov=fov),
-            decoder=decoder)
+            decoder=decoder, record_path=record)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -99,6 +99,13 @@ def main(argv=None) -> int:
                         help="show a live camera-view window during the "
                              "sweep — useful for confirming the laser dot "
                              "is actually visible to the camera.")
+    parser.add_argument("--record", default=None, metavar="FILE.ts",
+                        help="record the GoPro feed for the whole run to "
+                             "this .ts file (remux: ffmpeg -i x.ts -c copy "
+                             "x.mp4). GoPro decoder only.")
+    parser.add_argument("--single", action="store_true",
+                        help="run one calibration sweep only — skip the "
+                             "multi-depth validation (no target repositioning).")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -120,7 +127,7 @@ def main(argv=None) -> int:
         return 1
 
     camera = _open_camera(args.camera, args.cam_index, args.gopro_ip,
-                          args.decoder, _FOV_CODES[args.fov])
+                          args.decoder, _FOV_CODES[args.fov], args.record)
     if camera is None:
         print(f"FAIL: could not open {args.camera} camera")
         cube.disconnect()
@@ -147,50 +154,65 @@ def main(argv=None) -> int:
     try:
         cube.enable_output()
         print("\nLASER ON — calibration sweep")
-        run = run_live_calibration(
-            cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
-            scene=args.scene, mount_tilt_config=args.mount_config,
-            on_point=_progress, on_frame=on_frame)
+        try:
+            run = run_live_calibration(
+                cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
+                scene=args.scene, mount_tilt_config=args.mount_config,
+                on_point=_progress, on_frame=on_frame)
+        except (ValueError, RuntimeError) as exc:
+            print(f"\nsweep finished but the homography fit failed: {exc}")
+            print("This usually means the camera never cleanly saw the laser "
+                  "dot at distinct points. If you passed --record, the GoPro "
+                  "feed was still captured — review it to see what happened.")
+            return rc                    # finally still runs: laser off, etc.
         mapper = run.mapper
         print(f"\nfit: {mapper.n_points} points, "
               f"residual_norm={mapper.residual_norm:.4f}, "
               f"residual_galvo={mapper.residual_galvo:.1f}")
 
-        # Multi-depth validation — operator repositions the target each depth.
-        # Depths are shown in the operator's units (CALIBRATION_DEPTH_UNITS);
-        # the mapper math runs in metres (CALIBRATION_VALIDATION_DEPTHS_M).
-        unit = settings.CALIBRATION_DEPTH_UNITS
-        all_targets = []
-        for disp, depth_m in zip(settings.CALIBRATION_VALIDATION_DEPTHS,
-                                 settings.CALIBRATION_VALIDATION_DEPTHS_M):
-            input(f"\nPlace the calibration target at {disp:.1f} {unit}, "
-                  f"then press Enter...")
-            targets = live_validation_sweep(cube, camera, depth_m,
-                                            pattern=args.pattern,
-                                            on_point=_progress,
-                                            on_frame=on_frame)
-            print(f"  captured {len(targets)} validation points "
-                  f"at {disp:.1f} {unit}")
-            all_targets.extend(targets)
-
-        result = validate_multi_depth(mapper, all_targets)
-        mapper.validation = result
-        mapper.save(run.json_path)
-
-        print("\n" + "-" * 60)
-        for depth_m, resid in sorted(result.per_depth_residual_norm.items()):
-            disp = depth_m / settings.FT_TO_M if unit == "ft" else depth_m
-            print(f"  depth {disp:>5.1f} {unit} : residual_norm={resid:.4f}")
-        print(f"  max residual : {result.max_residual_norm:.4f}  "
-              f"(threshold {settings.CALIBRATION_MAX_RESIDUAL_NORM})")
-        print(f"  calibration  : {run.json_path}")
-        if result.passed:
-            print("\nPASS — calibration valid at all depths. Step 11 complete.")
+        if args.single:
+            mapper.save(run.json_path)
+            print(f"\nsingle cycle done — calibration saved to {run.json_path}")
+            print("(multi-depth validation skipped: --single)")
             rc = 0
         else:
-            print("\nFAIL — a planar homography is insufficient for this "
-                  "volume. Re-seat the camera, recalibrate, or escalate to a "
-                  "depth-aware mapper (v0.3).")
+            # Multi-depth validation — operator repositions the target each
+            # depth. Depths shown in CALIBRATION_DEPTH_UNITS; math in metres.
+            unit = settings.CALIBRATION_DEPTH_UNITS
+            all_targets = []
+            for disp, depth_m in zip(settings.CALIBRATION_VALIDATION_DEPTHS,
+                                     settings.CALIBRATION_VALIDATION_DEPTHS_M):
+                input(f"\nPlace the calibration target at {disp:.1f} {unit}, "
+                      f"then press Enter...")
+                targets = live_validation_sweep(cube, camera, depth_m,
+                                                pattern=args.pattern,
+                                                on_point=_progress,
+                                                on_frame=on_frame)
+                print(f"  captured {len(targets)} validation points "
+                      f"at {disp:.1f} {unit}")
+                all_targets.extend(targets)
+
+            result = validate_multi_depth(mapper, all_targets)
+            mapper.validation = result
+            mapper.save(run.json_path)
+
+            print("\n" + "-" * 60)
+            for depth_m, resid in sorted(
+                    result.per_depth_residual_norm.items()):
+                disp = depth_m / settings.FT_TO_M if unit == "ft" else depth_m
+                print(f"  depth {disp:>5.1f} {unit} : "
+                      f"residual_norm={resid:.4f}")
+            print(f"  max residual : {result.max_residual_norm:.4f}  "
+                  f"(threshold {settings.CALIBRATION_MAX_RESIDUAL_NORM})")
+            print(f"  calibration  : {run.json_path}")
+            if result.passed:
+                print("\nPASS — calibration valid at all depths. "
+                      "Step 11 complete.")
+                rc = 0
+            else:
+                print("\nFAIL — a planar homography is insufficient for this "
+                      "volume. Re-seat the camera, recalibrate, or escalate "
+                      "to a depth-aware mapper (v0.3).")
     finally:
         cube.disable_output()
         print("LASER OFF")
