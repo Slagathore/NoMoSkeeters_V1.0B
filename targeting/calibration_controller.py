@@ -239,20 +239,26 @@ def _capture_background(cube, camera, *, settle_s: float, dwell_samples: int,
 def _capture_dot(cube, camera, detector: LaserDotDetector,
                  gx_dac: int, gy_dac: int, rgb: tuple[int, int, int],
                  *, hold_s: float, settle_s: float, dwell_samples: int,
-                 background: Optional[np.ndarray] = None,
                  on_frame: Optional[Callable] = None) -> Optional[DotObservation]:
-    """Hold the laser STEADY at one galvo coord, then detect the dot.
+    """Capture a laser-OFF reference, then hold the laser STEADY at the
+    galvo coord and detect the dot by temporal difference.
 
     The dwell is re-streamed continuously for `hold_s` seconds so the dot
     stays lit the whole time — a single 0.1 s flash is far shorter than the
     camera pipeline latency (several hundred ms on the USB GoPro feed), so a
     flash-then-read never sees the current point. Detection only starts
-    after `settle_s`, by which time the lit dot is guaranteed to be in the
-    frames; the highest-confidence observation over the window is returned.
+    after `settle_s`, by which time the lit dot is in the frames.
+
+    The reference is captured PER POINT, immediately before — a single
+    sweep-wide background drifts out of registration as the GoPro's
+    auto-exposure changes, lighting up high-contrast edges in the diff.
 
     `on_frame`, if given, is called with every camera frame (rgb) — used by
     the step11 script's --view option.
     """
+    background = _capture_background(cube, camera, settle_s=settle_s,
+                                     dwell_samples=dwell_samples,
+                                     on_frame=on_frame)
     r, g, b = rgb
     dwell = [LaserPoint(x=gx_dac, y=gy_dac, r=r, g=g, b=b)] * dwell_samples
     start = time.monotonic()
@@ -307,10 +313,6 @@ def run_live_calibration(cube, camera, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
-    # Laser-OFF reference for temporal-difference detection.
-    background = _capture_background(cube, camera, settle_s=settle_s,
-                                     dwell_samples=dwell_samples,
-                                     on_frame=on_frame)
 
     galvo_pts: list[Point] = []
     observed: list[Point] = []
@@ -319,7 +321,6 @@ def run_live_calibration(cube, camera, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
-                           background=background,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
@@ -371,10 +372,6 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
-    # Laser-OFF reference for temporal-difference detection.
-    background = _capture_background(cube, camera, settle_s=settle_s,
-                                     dwell_samples=dwell_samples,
-                                     on_frame=on_frame)
 
     targets: list[TestTarget] = []
     for idx, (gx, gy) in enumerate(galvo_path):
@@ -382,7 +379,6 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
-                           background=background,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)

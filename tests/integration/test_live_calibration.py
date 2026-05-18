@@ -42,9 +42,9 @@ class _BenchCamera:
         self._blank = blank
 
     def read(self):
-        # A real camera paces read() at the frame interval; mimic that so the
-        # _capture_dot hold-loop is paced instead of spinning the CPU.
-        time.sleep(0.02)
+        # A real camera paces read() at the frame interval; mimic that (fast)
+        # so the capture hold-loops are paced instead of spinning the CPU.
+        time.sleep(0.004)
         img = np.full((self._size, self._size, 3), 20, dtype=np.uint8)
         dac = self._state.get("galvo_dac")
         if dac is not None and self._state.get("lit") and not self._blank:
