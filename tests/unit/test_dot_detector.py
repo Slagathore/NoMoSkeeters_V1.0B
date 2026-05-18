@@ -69,3 +69,16 @@ def test_detect_diff_none_when_nothing_changed():
     det = LaserDotDetector()
     bg = _frame_with_dot((100, 100))
     assert det.detect_diff(bg, bg) is None          # identical → empty diff
+
+
+def test_detect_diff_prefers_the_bright_core_over_a_dim_glow():
+    # The laser throws a wide DIM scatter glow plus a small BRIGHT core.
+    # The largest blob is the glow; detect_diff must pick the core.
+    det = LaserDotDetector()
+    bg = np.full((240, 240, 3), 20, dtype=np.uint8)
+    lit = bg.copy()
+    cv2.circle(lit, (160, 150), 45, (75, 75, 75), -1)            # dim glow
+    cv2.circle(lit, (88, 92), 4, (255, 255, 255), -1)            # bright core
+    obs = det.detect_diff(lit, bg)
+    assert obs is not None
+    assert abs(obs.x_px - 88) <= 5 and abs(obs.y_px - 92) <= 5    # the core
