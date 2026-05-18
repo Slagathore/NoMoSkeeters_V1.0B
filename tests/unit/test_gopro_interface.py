@@ -23,9 +23,10 @@ class FakeUDP:
         self.closed = True
 
 
-def _iface(http_log=None, sock=None) -> GoProInterface:
+def _iface(http_log=None, sock=None, mode="webcam") -> GoProInterface:
     http_log = http_log if http_log is not None else []
     return GoProInterface(
+        mode=mode,
         http_get=lambda url, t: http_log.append(url) or True,
         socket_factory=lambda: sock or FakeUDP(),
     )
@@ -40,42 +41,55 @@ def test_keepalive_packet_is_documented_gphd():
 
 
 def test_url_targets_open_gopro_http_api():
-    url = _iface()._url("/gopro/camera/stream/start")
-    assert url == "http://10.5.5.9:8080/gopro/camera/stream/start"
+    url = _iface()._url("/gopro/webcam/start")
+    assert url == "http://10.5.5.9:8080/gopro/webcam/start"
 
 
 def test_satisfies_gopro_control_protocol():
     assert isinstance(_iface(), GoProControl)
 
 
-# ── start / stop ─────────────────────────────────────────────────────────
+def test_camera_ip_property():
+    assert GoProInterface(ip="172.27.109.51").camera_ip == "172.27.109.51"
 
-def test_start_preview_hits_start_endpoint():
+
+# ── webcam mode (default — the path verified working on the Hero 13) ─────
+
+def test_webcam_start_hits_webcam_endpoint():
     log: list[str] = []
     assert _iface(http_log=log).start_preview() is True
-    assert log == ["http://10.5.5.9:8080/gopro/camera/stream/start"]
+    assert log == ["http://10.5.5.9:8080/gopro/webcam/start"]
 
 
-def test_stop_preview_hits_stop_endpoint_and_closes_socket():
+def test_webcam_stop_hits_stop_then_exit():
     log: list[str] = []
+    assert _iface(http_log=log).stop_preview() is True
+    assert log[-2].endswith("/gopro/webcam/stop")
+    assert log[-1].endswith("/gopro/webcam/exit")
+
+
+def test_webcam_keep_alive_is_noop():
     sock = FakeUDP()
-    iface = _iface(http_log=log, sock=sock)
-    iface.keep_alive()                       # lazily opens the UDP socket
-    assert iface.stop_preview() is True
-    assert log[-1] == "http://10.5.5.9:8080/gopro/camera/stream/stop"
-    assert sock.closed is True
+    assert _iface(sock=sock).keep_alive() is True
+    assert sock.sent == []                   # webcam needs no client keep-alive
 
 
-def test_start_preview_false_on_http_failure():
+def test_start_false_on_http_failure():
     iface = GoProInterface(http_get=lambda url, t: False)
     assert iface.start_preview() is False
 
 
-# ── keep-alive ───────────────────────────────────────────────────────────
+# ── preview mode (legacy fallback for non-Hero-13 models) ────────────────
 
-def test_keep_alive_sends_gphd_packet_to_stream_port():
+def test_preview_mode_uses_stream_endpoints():
+    log: list[str] = []
+    _iface(http_log=log, mode="preview").start_preview()
+    assert log[-1].endswith("/gopro/camera/stream/start")
+
+
+def test_preview_keep_alive_sends_gphd_packet():
     sock = FakeUDP()
-    iface = _iface(sock=sock)
+    iface = _iface(sock=sock, mode="preview")
     assert iface.keep_alive() is True
     data, addr = sock.sent[0]
     assert data == _KEEPALIVE_PACKET
@@ -101,17 +115,15 @@ class FakeCapture:
 def test_gopro_sensor_uses_interface_for_lifecycle(monkeypatch):
     monkeypatch.setattr(gopro_mod, "_KEEPALIVE_INTERVAL_S", 0.01)
     http_log: list[str] = []
-    sock = FakeUDP()
-    iface = _iface(http_log=http_log, sock=sock)
+    iface = _iface(http_log=http_log)
     cam = GoProSensor(control=iface, capture_factory=FakeCapture)
 
     assert cam.open() is True
-    assert http_log[0].endswith("/gopro/camera/stream/start")
+    assert http_log[0].endswith("/gopro/webcam/start")
 
-    time.sleep(0.05)                         # let the keep-alive thread tick
+    time.sleep(0.05)
     cam.close()
-    assert http_log[-1].endswith("/gopro/camera/stream/stop")
-    assert len(sock.sent) >= 1               # keep-alive packets went out
+    assert http_log[-1].endswith("/gopro/webcam/exit")
 
 
 # ── get_state — /gopro/camera/state poll (HARDWARE_FINDINGS.md §2.4) ─────
@@ -193,8 +205,8 @@ def test_decoder_ffmpeg_builds_subprocess_capture(monkeypatch):
     built: list[str] = []
 
     class FakeFfmpeg:
-        def __init__(self, url):
-            built.append(url)
+        def __init__(self, camera_ip=None, **kw):
+            built.append(camera_ip)
 
         def isOpened(self):
             return True
@@ -206,10 +218,10 @@ def test_decoder_ffmpeg_builds_subprocess_capture(monkeypatch):
             pass
 
     monkeypatch.setattr(ffmod, "FfmpegStreamCapture", FakeFfmpeg)
-    cam = GoProSensor(decoder="ffmpeg", stream_url="udp://0.0.0.0:8554")
+    cam = GoProSensor(decoder="ffmpeg", camera_ip="172.27.109.51")
 
     assert cam.open() is True
-    assert built == ["udp://0.0.0.0:8554"]      # subprocess decoder selected
+    assert built == ["172.27.109.51"]           # subprocess decoder, camera IP
     frame = cam.read()
     assert frame is not None and frame.rgb is not None
     cam.close()

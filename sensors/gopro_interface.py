@@ -1,23 +1,20 @@
 """GoProInterface — the Open GoPro HTTP control client for GoProSensor.
 
-Implements the GoProControl protocol: start the UDP preview stream, keep it
-alive, stop it. GoProSensor handles the cv2 video decode; this handles camera
-control so the two stay separable and testable.
+Implements the GoProControl protocol: start the camera streaming, keep it
+alive, stop it, poll status. GoProSensor handles the video decode; this
+handles camera control so the two stay separable and testable.
 
-Endpoints verified against the Open GoPro HTTP API 2.0 docs
-(https://gopro.github.io/OpenGoPro/http/, retrieved 2026-05-17):
+Two streaming modes (set via `mode=`):
 
-  - start preview : GET http://10.5.5.9:8080/gopro/camera/stream/start
-  - stop  preview : GET http://10.5.5.9:8080/gopro/camera/stream/stop
-  - the preview is served as MPEG-TS over UDP on port 8554
+  * "webcam"  (default) — GET /gopro/webcam/start, served as MPEG-TS over
+    UDP 8554. **This is what works on the Hero 13** (verified hardware
+    session 2026-05-17, HARDWARE_FINDINGS.md). The feed is H.264 1080p30.
+  * "preview" — GET /gopro/camera/stream/start. This is really a WiFi-AP
+    feature and did not deliver UDP over USB on the Hero 13; kept only as
+    a fallback for other models.
 
-Keep-alive: the UDP preview stream stops within ~2.5 s unless a keep-alive
-datagram is sent. We send the documented `_GPHD_` stream keep-alive packet to
-the camera on the stream port — the mechanism the bootstrap §5.2 calls out.
-If a Hero 13 turns out to want the HTTP keep-alive instead, only keep_alive()
-changes; start/stop and GoProSensor are untouched.
-
-NOT reconstructed from memory — see the cited docs.
+Webcam mode needs no client keep-alive. The legacy `_GPHD_` datagram is
+kept for preview mode only.
 """
 from __future__ import annotations
 
@@ -84,6 +81,7 @@ class GoProInterface:
                  http_port: int = _HTTP_PORT,
                  stream_port: int = _STREAM_PORT,
                  http_timeout_s: float = 5.0,
+                 mode: str = "webcam",
                  *,
                  http_get: Optional[Callable[[str, float], bool]] = None,
                  http_get_json: Optional[Callable[[str, float], Optional[Any]]] = None,
@@ -92,11 +90,17 @@ class GoProInterface:
         self._http_port = http_port
         self._stream_port = stream_port
         self._timeout = http_timeout_s
+        self._mode = mode
         self._http_get = http_get or _default_http_get
         self._http_get_json = http_get_json or _default_http_get_json
         self._socket_factory = socket_factory or (
             lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
         self._ka_sock: Optional[object] = None
+
+    @property
+    def camera_ip(self) -> str:
+        """The camera's HTTP/stream IP — FfmpegStreamCapture binds against it."""
+        return self._ip
 
     # ── URL helper ───────────────────────────────────────────────────────
 
@@ -106,18 +110,29 @@ class GoProInterface:
     # ── GoProControl protocol ────────────────────────────────────────────
 
     def start_preview(self) -> bool:
-        """Enable the UDP preview stream on port 8554."""
-        ok = self._http_get(self._url("/gopro/camera/stream/start"),
-                            self._timeout)
+        """Start the camera streaming MPEG-TS over UDP 8554.
+
+        webcam mode → /gopro/webcam/start ; preview mode → stream/start.
+        """
+        path = ("/gopro/webcam/start" if self._mode == "webcam"
+                else "/gopro/camera/stream/start")
+        ok = self._http_get(self._url(path), self._timeout)
         if ok:
-            _log.info("gopro: preview stream started (udp:%d)",
-                      self._stream_port)
+            _log.info("gopro: %s stream started (udp:%d)",
+                      self._mode, self._stream_port)
         return ok
 
     def stop_preview(self) -> bool:
-        """Disable the preview stream and release the keep-alive socket."""
-        ok = self._http_get(self._url("/gopro/camera/stream/stop"),
-                            self._timeout)
+        """Stop streaming and release the keep-alive socket.
+
+        webcam mode is stopped AND exited so the camera leaves webcam state.
+        """
+        if self._mode == "webcam":
+            ok = self._http_get(self._url("/gopro/webcam/stop"), self._timeout)
+            self._http_get(self._url("/gopro/webcam/exit"), self._timeout)
+        else:
+            ok = self._http_get(self._url("/gopro/camera/stream/stop"),
+                                self._timeout)
         if self._ka_sock is not None:
             try:
                 self._ka_sock.close()
@@ -127,10 +142,13 @@ class GoProInterface:
         return ok
 
     def keep_alive(self) -> bool:
-        """Send one `_GPHD_` keep-alive datagram to the stream port.
+        """Keep the stream alive.
 
-        Called on GoProSensor's keep-alive thread roughly every 2 s.
+        Webcam mode needs no client keep-alive — it runs until stopped — so
+        this is a no-op there. Preview mode sends the legacy `_GPHD_` packet.
         """
+        if self._mode == "webcam":
+            return True
         if self._ka_sock is None:
             self._ka_sock = self._socket_factory()
         try:

@@ -1,57 +1,70 @@
 #!/usr/bin/env python3
-"""gp_py_smoke_subprocess.py — smoke test for the subprocess-ffmpeg GoPro
-decoder.
+"""gp_py_smoke_subprocess.py — end-to-end smoke test of the GoPro video feed.
 
-Exercises sensors/ffmpeg_capture.FfmpegStreamCapture — the very decoder that
-GoProSensor(decoder="ffmpeg") feeds the targeting pipeline with. If this
-PASSes, the subprocess decoder is good to use as the live video source.
+Starts the Hero 13 in webcam mode, opens FfmpegStreamCapture (the exact
+decoder the targeting pipeline uses), and reports decoded frames. A PASS
+here means the live video source is good to go.
 
-PREREQUISITE: the GoPro preview stream must be running and nothing else
-bound to UDP 8554 (single-consumer — HARDWARE_FINDINGS.md §3.2). Start it
-with tools/gopro_stream_helper.ps1 (Start-GoProStream) first.
+No laser involved. Requires the camera USB-tethered and reachable.
+
+    python gp_py_smoke_subprocess.py [--ip 172.27.109.51]
 """
+import argparse
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from sensors.ffmpeg_capture import FfmpegStreamCapture   # noqa: E402
+from sensors.ffmpeg_capture import FfmpegStreamCapture, local_ip_for  # noqa: E402
 
-URL = "udp://0.0.0.0:8554"
-DURATION_S = 10
 
-print(f"Opening {URL} via subprocess ffmpeg ...")
-cap = FfmpegStreamCapture(URL)
-if not cap.isOpened():
-    print("FAIL: ffmpeg subprocess did not start")
-    raise SystemExit(1)
+def http_get(ip: str, path: str):
+    try:
+        with urllib.request.urlopen(f"http://{ip}:8080{path}", timeout=8) as r:
+            return r.status
+    except Exception as exc:                                  # noqa: BLE001
+        return f"ERR {exc}"
 
-frame_count = 0
-first_frame_at: float | None = None
-start = time.monotonic()
-deadline = start + DURATION_S
 
-print(f"Reading frames for {DURATION_S} seconds...")
-while time.monotonic() < deadline:
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        print("Stream ended or broke before the deadline")
-        break
-    if first_frame_at is None:
-        first_frame_at = time.monotonic()
-        print(f"First frame at {first_frame_at - start:.2f}s, "
-              f"shape={frame.shape}, dtype={frame.dtype}")
-    frame_count += 1
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--ip", default="172.27.109.51", help="camera HTTP IP")
+    ap.add_argument("--seconds", type=int, default=12)
+    args = ap.parse_args(argv)
 
-cap.release()
+    print(f"camera {args.ip}; host interface {local_ip_for(args.ip)}")
+    print("webcam/start ->", http_get(args.ip, "/gopro/webcam/start"))
 
-if frame_count == 0:
-    print("FAIL: zero frames received. Check the stream is running and that "
-          "nothing else holds UDP 8554 (netstat -ano | findstr 8554).")
-    raise SystemExit(2)
+    frames = 0
+    first = None
+    try:
+        cap = FfmpegStreamCapture(camera_ip=args.ip)
+        if not cap.isOpened():
+            print("FAIL: FfmpegStreamCapture did not open")
+            return 1
+        deadline = time.monotonic() + args.seconds
+        while time.monotonic() < deadline:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue                       # feed warming up — keep trying
+            if first is None:
+                first = time.monotonic()
+                print(f"first frame: shape={frame.shape}, dtype={frame.dtype}")
+            frames += 1
+        cap.release()
+    finally:
+        http_get(args.ip, "/gopro/webcam/stop")
+        http_get(args.ip, "/gopro/webcam/exit")
 
-assert first_frame_at is not None  # frame_count > 0 ⟹ set in the loop
-elapsed = time.monotonic() - first_frame_at
-print(f"PASS: {frame_count} frames in {elapsed:.1f}s "
-      f"= {frame_count / elapsed:.1f} fps")
+    if not frames:
+        print("FAIL: zero frames decoded")
+        return 2
+    elapsed = time.monotonic() - first
+    print(f"PASS: {frames} frames in {elapsed:.1f}s = {frames / elapsed:.1f} fps")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

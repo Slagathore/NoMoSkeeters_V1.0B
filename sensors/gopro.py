@@ -63,6 +63,7 @@ class GoProSensor(Sensor):
                  timestamp_uncertainty_ms: float = 20.0,
                  capture_factory: Optional[Callable[[], object]] = None,
                  decoder: str = "opencv",
+                 camera_ip: Optional[str] = None,
                  capture_options: str = _DEFAULT_CAPTURE_OPTIONS,
                  on_status: Optional[StatusCallback] = None,
                  status_poll_interval_s: float = _STATUS_POLL_INTERVAL_S):
@@ -71,6 +72,11 @@ class GoProSensor(Sensor):
         self._control = control
         self._ts_uncertainty = timestamp_uncertainty_ms
         self._decoder = decoder
+        # The "ffmpeg" decoder binds a socket on the camera's subnet; take the
+        # camera IP from the injected control if it exposes one.
+        if camera_ip is None:
+            camera_ip = getattr(control, "camera_ip", "172.27.109.51")
+        self._camera_ip = camera_ip
         self._capture_factory = capture_factory or self._default_capture
         self._capture_options = capture_options
         self._on_status = on_status
@@ -93,7 +99,7 @@ class GoProSensor(Sensor):
         """
         if self._decoder == "ffmpeg":
             from sensors.ffmpeg_capture import FfmpegStreamCapture
-            return FfmpegStreamCapture(self._stream_url)
+            return FfmpegStreamCapture(camera_ip=self._camera_ip)
         return cv2.VideoCapture(self._stream_url, cv2.CAP_FFMPEG)
 
     def set_status_sink(self, on_status: Optional[StatusCallback]) -> None:
