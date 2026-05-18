@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import socket as _socket
+import time
 
 import numpy as np
 
@@ -93,8 +94,8 @@ def test_local_ip_for_returns_an_ipv4():
 
 # ── frame decoding ───────────────────────────────────────────────────────
 
-def test_read_returns_decoded_frames():
-    cap = _capture(_frame(10) + _frame(20))
+def test_read_returns_a_decoded_frame():
+    cap = _capture(_frame(10))
     assert cap.isOpened() is True
 
     ok, frame = cap.read()
@@ -102,9 +103,15 @@ def test_read_returns_decoded_frames():
     assert frame.shape == (H, W, 3)
     assert frame.dtype == np.uint8
     assert int(frame[0, 0, 0]) == 10
+    cap.release()
 
+
+def test_read_yields_the_newest_frame_only():
+    # Three frames decoded; the depth-1 queue means read() returns the last.
+    cap = _capture(_frame(1) + _frame(2) + _frame(3))
+    time.sleep(0.3)                             # let the reader drain ffmpeg
     ok, frame = cap.read()
-    assert ok is True and int(frame[0, 0, 0]) == 20
+    assert ok is True and int(frame[0, 0, 0]) == 3
     cap.release()
 
 

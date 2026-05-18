@@ -35,7 +35,9 @@ _DEFAULT_CAMERA_IP = "172.27.109.51"
 _DEFAULT_PORT = 8554
 _DEFAULT_WIDTH = 1920
 _DEFAULT_HEIGHT = 1080
-_FRAME_QUEUE_MAX = 4               # keep the feed shallow — targeting wants fresh
+# Hold only the newest decoded frame — targeting wants the freshest possible
+# image, not a backlog. A deeper queue just adds latency.
+_FRAME_QUEUE_MAX = 1
 
 
 def local_ip_for(camera_ip: str) -> str:
@@ -67,21 +69,25 @@ def local_ip_for(camera_ip: str) -> str:
 def build_ffmpeg_command(ffmpeg_path: str, hwaccel: Optional[str]) -> list:
     """ffmpeg argv: read MPEG-TS from stdin, emit raw bgr24 on stdout.
 
-    `hwaccel` (e.g. "cuda" for NVDEC) offloads decode off the CPU — worth
-    it for sustained 1080p30 — but is off by default so a missing GPU build
-    cannot break capture.
+    Tuned for low latency: a short probe, no demux/decode buffering, and
+    per-packet output flushing. `hwaccel` (e.g. "cuda" for NVDEC) offloads
+    decode off the CPU — worth it for sustained 1080p30 — but is off by
+    default so a missing GPU build cannot break capture.
     """
     cmd = [ffmpeg_path]
     if hwaccel:
         cmd += ["-hwaccel", hwaccel]
     cmd += [
-        "-fflags", "nobuffer",
-        "-flags", "low_delay",
+        "-probesize", "500000",         # identify the stream fast (low startup)
+        "-analyzeduration", "0",
+        "-fflags", "nobuffer",          # no demuxer buffering
+        "-flags", "low_delay",          # no decoder reordering buffer
         "-f", "mpegts",
         "-i", "pipe:0",
         "-an",                          # ignore the audio + metadata streams
         "-f", "rawvideo",
         "-pix_fmt", "bgr24",
+        "-flush_packets", "1",          # push each decoded frame out at once
         "-loglevel", "error",
         "-",
     ]

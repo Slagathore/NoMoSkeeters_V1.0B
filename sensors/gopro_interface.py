@@ -82,6 +82,7 @@ class GoProInterface:
                  stream_port: int = _STREAM_PORT,
                  http_timeout_s: float = 5.0,
                  mode: str = "webcam",
+                 webcam_fov: Optional[int] = None,
                  *,
                  http_get: Optional[Callable[[str, float], bool]] = None,
                  http_get_json: Optional[Callable[[str, float], Optional[Any]]] = None,
@@ -91,6 +92,10 @@ class GoProInterface:
         self._stream_port = stream_port
         self._timeout = http_timeout_s
         self._mode = mode
+        # Webcam FOV code: 0=Wide (fisheye, camera default), 4=Linear
+        # (de-warped), 3=Superview. None → don't send the param. Note some
+        # firmware ignores it (OpenGoPro issue #459) — verify on the bench.
+        self._webcam_fov = webcam_fov
         self._http_get = http_get or _default_http_get
         self._http_get_json = http_get_json or _default_http_get_json
         self._socket_factory = socket_factory or (
@@ -114,8 +119,12 @@ class GoProInterface:
 
         webcam mode → /gopro/webcam/start ; preview mode → stream/start.
         """
-        path = ("/gopro/webcam/start" if self._mode == "webcam"
-                else "/gopro/camera/stream/start")
+        if self._mode == "webcam":
+            path = "/gopro/webcam/start"
+            if self._webcam_fov is not None:
+                path += f"?fov={self._webcam_fov}"
+        else:
+            path = "/gopro/camera/stream/start"
         ok = self._http_get(self._url(path), self._timeout)
         if ok:
             _log.info("gopro: %s stream started (udp:%d)",

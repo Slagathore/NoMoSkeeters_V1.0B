@@ -61,11 +61,16 @@ def _progress(idx: int, total: int, obs) -> None:
               f"{obs.y_norm:.3f})  conf={obs.confidence:.2f}")
 
 
-def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str):
+_FOV_CODES = {"default": None, "wide": 0, "linear": 4, "superview": 3}
+
+
+def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
+                 fov: object):
     if kind == "gopro":
-        # HTTP start + keep-alive over the camera's IP (USB-tethered = .51).
-        cam = GoProSensor(control=GoProInterface(ip=gopro_ip),
-                          decoder=decoder)
+        # HTTP control over the camera's IP (USB-tethered = .51).
+        cam = GoProSensor(
+            control=GoProInterface(ip=gopro_ip, webcam_fov=fov),
+            decoder=decoder)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -86,6 +91,14 @@ def main(argv=None) -> int:
                         help="GoPro stream decoder. 'ffmpeg' pipes a "
                              "dedicated ffmpeg subprocess — use it if cv2 "
                              "cannot decode the Hero 13 HEVC stream.")
+    parser.add_argument("--fov", choices=list(_FOV_CODES),
+                        default="default",
+                        help="GoPro webcam field of view. 'linear' removes "
+                             "the fisheye warp (some firmware ignores it).")
+    parser.add_argument("--view", action="store_true",
+                        help="show a live camera-view window during the "
+                             "sweep — useful for confirming the laser dot "
+                             "is actually visible to the camera.")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -107,12 +120,22 @@ def main(argv=None) -> int:
         return 1
 
     camera = _open_camera(args.camera, args.cam_index, args.gopro_ip,
-                          args.decoder)
+                          args.decoder, _FOV_CODES[args.fov])
     if camera is None:
         print(f"FAIL: could not open {args.camera} camera")
         cube.disconnect()
         return 1
     print(f"camera: {camera.sensor_id} opened")
+
+    # Optional live camera-view window for the duration of the sweep.
+    on_frame = None
+    cv2mod = None
+    if args.view:
+        import cv2 as cv2mod          # noqa: F401 — only needed for --view
+
+        def on_frame(rgb):
+            cv2mod.imshow("calibration - camera view", rgb)
+            cv2mod.waitKey(1)
 
     if not _confirm(f"Run a '{args.pattern}' calibration sweep now?"):
         camera.close()
@@ -127,7 +150,7 @@ def main(argv=None) -> int:
         run = run_live_calibration(
             cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
             scene=args.scene, mount_tilt_config=args.mount_config,
-            on_point=_progress)
+            on_point=_progress, on_frame=on_frame)
         mapper = run.mapper
         print(f"\nfit: {mapper.n_points} points, "
               f"residual_norm={mapper.residual_norm:.4f}, "
@@ -144,7 +167,8 @@ def main(argv=None) -> int:
                   f"then press Enter...")
             targets = live_validation_sweep(cube, camera, depth_m,
                                             pattern=args.pattern,
-                                            on_point=_progress)
+                                            on_point=_progress,
+                                            on_frame=on_frame)
             print(f"  captured {len(targets)} validation points "
                   f"at {disp:.1f} {unit}")
             all_targets.extend(targets)
@@ -172,6 +196,8 @@ def main(argv=None) -> int:
         print("LASER OFF")
         camera.close()
         cube.disconnect()
+        if cv2mod is not None:
+            cv2mod.destroyAllWindows()
         print("disconnected")
     return rc
 

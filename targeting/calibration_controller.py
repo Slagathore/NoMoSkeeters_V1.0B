@@ -213,20 +213,27 @@ def calibration_pattern_path(pattern: Optional[str] = None) -> list[Point]:
 def _capture_dot(cube, camera, detector: LaserDotDetector,
                  gx_dac: int, gy_dac: int, rgb: tuple[int, int, int],
                  *, settle_frames: int, max_attempts: int,
-                 dwell_samples: int) -> Optional[DotObservation]:
+                 dwell_samples: int,
+                 on_frame: Optional[Callable] = None) -> Optional[DotObservation]:
     """Hold the laser on one galvo coord, detect the dot in the camera.
 
     Re-streams the dwell each attempt because the cube scans its ringbuffer
     out continuously — the dot is only lit while samples remain queued.
+    `on_frame`, if given, is called with every camera frame (rgb) — used by
+    the step11 script's --view option to show what the camera sees.
     """
     r, g, b = rgb
     dwell = [LaserPoint(x=gx_dac, y=gy_dac, r=r, g=g, b=b)] * dwell_samples
     for _ in range(max_attempts):
         cube.send_frame(dwell, frame_num=0)
         for _ in range(settle_frames):        # drop stale / in-flight frames
-            camera.read()
+            stale = camera.read()
+            if on_frame is not None and stale is not None and stale.rgb is not None:
+                on_frame(stale.rgb)
         frame = camera.read()
         if frame is not None and frame.rgb is not None:
+            if on_frame is not None:
+                on_frame(frame.rgb)
             obs = detector.detect(frame.rgb)
             if obs is not None:
                 return obs
@@ -246,7 +253,8 @@ def run_live_calibration(cube, camera, *,
                          settle_frames: int = 2,
                          max_attempts: int = 8,
                          dwell_samples: int = 3000,
-                         on_point: Optional[PointCallback] = None) -> CalibrationRun:
+                         on_point: Optional[PointCallback] = None,
+                         on_frame: Optional[Callable] = None) -> CalibrationRun:
     """Calibrate against the real cube + camera (Step 11).
 
     The caller (the step11 script) must have connected the cube and ENABLED
@@ -267,7 +275,8 @@ def run_live_calibration(cube, camera, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            settle_frames=settle_frames,
                            max_attempts=max_attempts,
-                           dwell_samples=dwell_samples)
+                           dwell_samples=dwell_samples,
+                           on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
         if obs is None:
@@ -302,7 +311,8 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                           settle_frames: int = 2,
                           max_attempts: int = 8,
                           dwell_samples: int = 3000,
-                          on_point: Optional[PointCallback] = None) -> list[TestTarget]:
+                          on_point: Optional[PointCallback] = None,
+                          on_frame: Optional[Callable] = None) -> list[TestTarget]:
     """Sweep the pattern once at a known depth; return TestTargets for
     validate_multi_depth(). The operator places the target plane at depth_m
     before calling this."""
@@ -318,7 +328,8 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            settle_frames=settle_frames,
                            max_attempts=max_attempts,
-                           dwell_samples=dwell_samples)
+                           dwell_samples=dwell_samples,
+                           on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
         if obs is not None:
