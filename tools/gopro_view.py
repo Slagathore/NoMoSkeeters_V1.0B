@@ -31,15 +31,20 @@ def main(argv=None) -> int:
     ap.add_argument("--fov", choices=list(_FOV_CODES), default="default",
                     help="webcam field of view; 'linear' removes the "
                          "fisheye warp (some firmware ignores it)")
+    ap.add_argument("--record", default=None, metavar="FILE.ts",
+                    help="also save the raw camera stream to this .ts file "
+                         "(remux to mp4 later: ffmpeg -i x.ts -c copy x.mp4)")
     args = ap.parse_args(argv)
 
     cam = GoProSensor(
         control=GoProInterface(ip=args.ip, webcam_fov=_FOV_CODES[args.fov]),
-        decoder="ffmpeg")
+        decoder="ffmpeg", record_path=args.record)
     if not cam.open():
         print("FAIL: could not open the GoPro feed — is it USB-tethered?")
         return 1
     print("GoPro feed open. Press q or Esc in the window to quit.")
+    if args.record:
+        print(f"recording to {args.record}")
 
     frames = 0
     fps = 0.0

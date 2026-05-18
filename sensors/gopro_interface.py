@@ -119,13 +119,25 @@ class GoProInterface:
 
         webcam mode → /gopro/webcam/start ; preview mode → stream/start.
         """
-        if self._mode == "webcam":
-            path = "/gopro/webcam/start"
-            if self._webcam_fov is not None:
-                path += f"?fov={self._webcam_fov}"
+        if self._mode != "webcam":
+            ok = self._http_get(self._url("/gopro/camera/stream/start"),
+                                self._timeout)
         else:
-            path = "/gopro/camera/stream/start"
-        ok = self._http_get(self._url(path), self._timeout)
+            ok = False
+            if self._webcam_fov is not None:
+                # Try the fov query param; some firmware (e.g. Hero 13 H24)
+                # rejects it — fall back to a plain start so the feed still
+                # comes up (OpenGoPro issue #459).
+                ok = self._http_get(
+                    self._url(f"/gopro/webcam/start?fov={self._webcam_fov}"),
+                    self._timeout)
+                if not ok:
+                    _log.warning("gopro: webcam fov=%s rejected by this "
+                                 "firmware; starting without it",
+                                 self._webcam_fov)
+            if not ok:
+                ok = self._http_get(self._url("/gopro/webcam/start"),
+                                    self._timeout)
         if ok:
             _log.info("gopro: %s stream started (udp:%d)",
                       self._mode, self._stream_port)

@@ -66,7 +66,7 @@ class FakeProc:
 def _capture(stdout_data: bytes, datagrams=(b"ts-bytes",)):
     return FfmpegStreamCapture(
         camera_ip="172.27.109.51", width=W, height=H,
-        bind_ip="172.27.109.55", read_timeout_s=1.0,
+        bind_ip="172.27.109.55", read_timeout_s=1.0, hwaccel=None,
         popen=lambda *a, **k: FakeProc(stdout_data),
         sock=FakeSock(datagrams))
 
@@ -142,7 +142,8 @@ def test_release_terminates_process_and_is_idempotent():
 
     sock = FakeSock()
     cap = FfmpegStreamCapture("172.27.109.51", width=W, height=H,
-                              bind_ip="172.27.109.55", popen=_popen, sock=sock)
+                              bind_ip="172.27.109.55", hwaccel=None,
+                              popen=_popen, sock=sock)
     cap.release()
     assert box["proc"].terminated is True
     assert sock.closed is True
@@ -155,8 +156,39 @@ def test_spawn_failure_reports_not_opened():
         raise OSError("ffmpeg not found")
 
     cap = FfmpegStreamCapture("172.27.109.51", width=W, height=H,
-                              bind_ip="172.27.109.55", popen=_boom,
-                              sock=FakeSock())
+                              bind_ip="172.27.109.55", hwaccel=None,
+                              popen=_boom, sock=FakeSock())
     assert cap.isOpened() is False
     ok, frame = cap.read()
     assert ok is False and frame is None
+
+
+def test_record_path_writes_the_raw_stream(tmp_path):
+    rec = tmp_path / "rec.ts"
+    cap = FfmpegStreamCapture(
+        "172.27.109.51", width=W, height=H, bind_ip="172.27.109.55",
+        read_timeout_s=1.0, hwaccel=None, record_path=str(rec),
+        popen=lambda *a, **k: FakeProc(_frame(1)),
+        sock=FakeSock([b"AAAA", b"BBBB"]))
+    time.sleep(0.3)                             # let the feeder drain datagrams
+    cap.release()
+    assert rec.read_bytes() == b"AAAABBBB"
+
+
+def test_hwaccel_falls_back_to_software_when_cuda_dies():
+    cmds = []
+
+    def _popen(cmd, **k):
+        cmds.append(cmd)
+        proc = FakeProc(_frame(7))
+        if len(cmds) == 1:                      # the cuda attempt "exits"
+            proc._alive = False
+        return proc
+
+    cap = FfmpegStreamCapture("172.27.109.51", width=W, height=H,
+                              bind_ip="172.27.109.55", hwaccel="cuda",
+                              popen=_popen, sock=FakeSock())
+    assert len(cmds) == 2                       # retried after cuda died
+    assert "-hwaccel" in cmds[0] and "-hwaccel" not in cmds[1]
+    assert cap.isOpened() is True
+    cap.release()

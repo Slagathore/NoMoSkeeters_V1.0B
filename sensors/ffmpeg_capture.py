@@ -25,6 +25,7 @@ import queue
 import socket
 import subprocess
 import threading
+import time
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -113,7 +114,8 @@ class FfmpegStreamCapture:
                  bind_ip: Optional[str] = None,
                  read_timeout_s: float = 2.0,
                  ffmpeg_path: str = "ffmpeg",
-                 hwaccel: Optional[str] = None,
+                 hwaccel: Optional[str] = "cuda",
+                 record_path: Optional[str] = None,
                  popen: Optional[Callable[..., object]] = None,
                  sock: Optional[object] = None):
         self._port = port
@@ -122,7 +124,12 @@ class FfmpegStreamCapture:
         self._frame_bytes = width * height * 3            # bgr24
         self._bind_ip = bind_ip or local_ip_for(camera_ip)
         self._read_timeout = read_timeout_s
-        self._cmd = build_ffmpeg_command(ffmpeg_path, hwaccel)
+        self._ffmpeg_path = ffmpeg_path
+        # NVDEC by default — the RTX 4070 Ti decodes 1080p30 H.264 off-CPU.
+        # If the ffmpeg build lacks it, _start falls back to software decode.
+        self._hwaccel = hwaccel
+        self._record_path = record_path
+        self._record_fh: Optional[object] = None
         self._popen = popen or subprocess.Popen
         self._proc: Optional[object] = None
         self._sock = sock
@@ -147,17 +154,26 @@ class FfmpegStreamCapture:
                            self._bind_ip, self._port, exc)
                 self._sock = None
                 return
-        try:
-            self._proc = self._popen(
-                self._cmd, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except (OSError, ValueError) as exc:
-            _log.error("ffmpeg spawn failed (%s): %s", self._cmd[0], exc)
-            self._proc = None
+        self._proc = self._spawn_ffmpeg(self._hwaccel)
+        # If hardware decode is unavailable (no NVDEC build / GPU) ffmpeg
+        # exits within a moment — fall back to software so the feed still
+        # comes up rather than going dark.
+        if self._proc is not None and self._hwaccel:
+            time.sleep(0.3)
+            if self._proc.poll() is not None:
+                _log.warning("ffmpeg hwaccel=%s failed to start; falling "
+                             "back to software decode", self._hwaccel)
+                self._proc = self._spawn_ffmpeg(None)
+        if self._proc is None or getattr(self._proc, "stdout", None) is None:
+            _log.error("ffmpeg did not start")
             return
-        if getattr(self._proc, "stdout", None) is None:
-            _log.error("ffmpeg started but stdout pipe is missing")
-            return
+        if self._record_path:
+            try:
+                self._record_fh = open(self._record_path, "wb")
+                _log.info("recording GoPro stream -> %s", self._record_path)
+            except OSError as exc:
+                _log.error("could not open record file %s: %s",
+                           self._record_path, exc)
         self._opened = True
         for target, name in ((self._feed, "gopro-udp-feed"),
                              (self._reader, "gopro-frame-reader"),
@@ -168,8 +184,19 @@ class FfmpegStreamCapture:
         _log.info("ffmpeg webcam decoder up: udp://%s:%d -> %dx%d",
                   self._bind_ip, self._port, self._width, self._height)
 
+    def _spawn_ffmpeg(self, hwaccel: Optional[str]) -> Optional[object]:
+        cmd = build_ffmpeg_command(self._ffmpeg_path, hwaccel)
+        try:
+            return self._popen(cmd, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        except (OSError, ValueError) as exc:
+            _log.error("ffmpeg spawn failed (%s): %s", cmd[0], exc)
+            return None
+
     def _feed(self) -> None:
-        """Pump UDP datagrams from the socket into ffmpeg's stdin."""
+        """Pump UDP datagrams from the socket into ffmpeg's stdin (and the
+        record file, if recording)."""
         stdin = self._proc.stdin                       # type: ignore[union-attr]
         while not self._stop.is_set():
             try:
@@ -178,6 +205,11 @@ class FfmpegStreamCapture:
                 continue
             except (ConnectionResetError, OSError):
                 continue                               # ICMP unreachable etc.
+            if self._record_fh is not None:
+                try:
+                    self._record_fh.write(data)
+                except OSError:
+                    pass
             try:
                 stdin.write(data)
                 stdin.flush()
@@ -256,6 +288,12 @@ class FfmpegStreamCapture:
             except OSError:
                 pass
             self._sock = None
+        if self._record_fh is not None:
+            try:
+                self._record_fh.close()
+            except OSError:
+                pass
+            self._record_fh = None
         proc = self._proc
         self._proc = None
         if proc is None:
