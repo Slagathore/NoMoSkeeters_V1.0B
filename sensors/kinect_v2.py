@@ -41,6 +41,9 @@ _DEPTH_CY = 205.395
 _COLOR_W, _COLOR_H = 1920, 1080
 _DEPTH_W, _DEPTH_H = 512, 424
 
+# The Kinect SDK allows exactly one runtime per process; this guards it.
+_KINECT_OPEN = False
+
 
 def pykinect2_available() -> bool:
     """Whether the Kinect SDK binding imported successfully."""
@@ -91,27 +94,39 @@ class KinectV2Sensor(Sensor):
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     def open(self) -> bool:
+        global _KINECT_OPEN
         if not _HAS_PYKINECT:
             _log.error("kinect_v2: pykinect2 not installed — sensor unavailable")
             return False
+        if _KINECT_OPEN:
+            _log.error("kinect_v2: a Kinect runtime is already open "
+                       "(the SDK allows one per process)")
+            return False
         try:
+            # RGB + depth + IR. Body tracking (dynamic no-fire zones around
+            # people/pets) is a separate safety-layer feature — not streamed
+            # here, so the Body source is deliberately not requested.
             sources = (PyKinectV2.FrameSourceTypes_Color
                        | PyKinectV2.FrameSourceTypes_Depth
-                       | PyKinectV2.FrameSourceTypes_Infrared
-                       | PyKinectV2.FrameSourceTypes_Body)
+                       | PyKinectV2.FrameSourceTypes_Infrared)
             self._kinect = PyKinectRuntime.PyKinectRuntime(sources)
         except Exception:
             _log.exception("kinect_v2: PyKinectRuntime init failed")
             return False
-        return self._kinect is not None
+        if self._kinect is None:
+            return False
+        _KINECT_OPEN = True
+        return True
 
     def close(self) -> None:
+        global _KINECT_OPEN
         if self._kinect is not None:
             try:
                 self._kinect.close()
             except Exception:
                 _log.exception("kinect_v2: close() raised")
             self._kinect = None
+        _KINECT_OPEN = False
 
     def read(self) -> Optional[SensorFrame]:
         if self._kinect is None:
@@ -130,14 +145,15 @@ class KinectV2Sensor(Sensor):
             frame.ir = self._kinect.get_last_infrared_frame().reshape(
                 (_DEPTH_H, _DEPTH_W))
 
-        if frame.rgb is None and frame.depth is None:
+        if frame.rgb is None and frame.depth is None and frame.ir is None:
             return None
 
         # §5.3 fix: width/height must be set — downstream normalizes by them.
-        if frame.rgb is not None:
-            frame.height, frame.width = frame.rgb.shape[:2]
-        else:
-            frame.height, frame.width = frame.depth.shape[:2]
+        # Take them from whichever stream is present (IR-only is valid — the
+        # depth camera can update without a new colour frame).
+        ref = (frame.rgb if frame.rgb is not None else
+               frame.depth if frame.depth is not None else frame.ir)
+        frame.height, frame.width = ref.shape[:2]
         self._width, self._height = frame.width, frame.height
         frame.timestamp_uncertainty_ms = self._ts_uncertainty
         return frame

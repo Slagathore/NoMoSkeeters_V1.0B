@@ -70,18 +70,29 @@ class CrossSensorExtrinsic:
             raise ValueError(
                 f"need ≥4 matched correspondences, got {len(src)}/{len(dst)}")
 
-        H_src_to_dst, _ = cv2.findHomography(src, dst, method=0)
+        # RANSAC once there are enough points to outvote a bad correspondence
+        # (a stray mis-detected dot); plain least-squares at the 4-point floor.
+        if len(src) >= 8:
+            H_src_to_dst, mask = cv2.findHomography(
+                src, dst, method=cv2.RANSAC, ransacReprojThreshold=0.01)
+        else:
+            H_src_to_dst, mask = cv2.findHomography(src, dst, method=0)
         if H_src_to_dst is None:
             raise ValueError("findHomography failed — degenerate points?")
         H_dst_to_src = np.linalg.inv(H_src_to_dst)
 
-        pred = apply_homography(H_src_to_dst, src)
-        residual = float(np.mean(np.linalg.norm(pred - dst, axis=1)))
-        _log.info("extrinsic %s→%s fit: %d pts, residual_norm=%.4f",
-                  src_sensor, dst_sensor, len(src), residual)
+        # Residual over the inliers RANSAC kept (all points for least-squares).
+        inliers = (mask.ravel().astype(bool) if mask is not None
+                   else np.ones(len(src), dtype=bool))
+        errs = np.linalg.norm(apply_homography(H_src_to_dst, src) - dst,
+                              axis=1)[inliers]
+        residual = float(np.mean(errs)) if errs.size else 0.0
+        n_inliers = int(inliers.sum())
+        _log.info("extrinsic %s→%s fit: %d/%d inlier pts, residual_norm=%.4f",
+                  src_sensor, dst_sensor, n_inliers, len(src), residual)
         return cls(H_src_to_dst=H_src_to_dst, H_dst_to_src=H_dst_to_src,
                    src_sensor=src_sensor, dst_sensor=dst_sensor,
-                   n_points=len(src), residual_norm=residual, scene=scene)
+                   n_points=n_inliers, residual_norm=residual, scene=scene)
 
     # ── Serialization ────────────────────────────────────────────────────
 

@@ -83,6 +83,23 @@ python scripts/step11_first_light.py                 # safe low-power dot
 python scripts/step11_calibration.py --camera gopro --gopro-ip 172.27.109.51 --decoder ffmpeg
 ```
 
+### Kinect v2 — pykinect2 binding
+
+`KinectV2Sensor` needs the Kinect for Windows SDK 2.0 plus the `pykinect2`
+Python binding. `pykinect2` ships pre-built ctypes wrappers that two things
+break on 64-bit Python 3.11; both must be patched **in the installed package**
+(`...\site-packages\pykinect2\PyKinectV2.py`) — and re-applied if `pykinect2`
+is ever reinstalled:
+
+1. `assert sizeof(tagSTATSTG) == 72` — the struct is 80 bytes on 64-bit
+   Python. Relax to `assert sizeof(tagSTATSTG) in (72, 80)`.
+2. `from comtypes import _check_version; _check_version('')` — comtypes 1.4
+   rejects the stale generated version stamp. Comment the call out.
+
+After patching, `python -c "from sensors.kinect_v2 import pykinect2_available;
+print(pykinect2_available())"` prints `True`. Without the SDK/binding the
+sensor imports cleanly and `open()` reports an honest failure.
+
 ### Diagnostics
 
 - `tools/gopro_stream_helper.ps1` — PowerShell stream start/stop/find helpers

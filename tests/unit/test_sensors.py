@@ -8,9 +8,10 @@ import numpy as np
 import pytest
 
 import sensors.gopro as gopro_mod
+import sensors.kinect_v2 as kinect_mod
 from sensors.base import Sensor, SensorFrame, SensorRole
 from sensors.gopro import GoProSensor
-from sensors.kinect_v2 import KinectV2Sensor, pykinect2_available
+from sensors.kinect_v2 import KinectV2Sensor
 from sensors.local_cam import LocalCamSensor
 from sensors.sensor_manager import SensorManager
 
@@ -110,9 +111,10 @@ def test_gopro_open_fails_when_stream_unavailable():
 
 # ── KinectV2Sensor ───────────────────────────────────────────────────────
 
-def test_kinect_unavailable_without_sdk():
-    # pykinect2 is not installed in this environment.
-    assert pykinect2_available() is False
+def test_kinect_honest_failure_without_sdk(monkeypatch):
+    # Force the no-SDK path so the guard is exercised whether or not the
+    # pykinect2 binding is installed on the test host.
+    monkeypatch.setattr(kinect_mod, "_HAS_PYKINECT", False)
     kinect = KinectV2Sensor()
     assert kinect.open() is False          # honest failure, no exception
     assert kinect.read() is None
