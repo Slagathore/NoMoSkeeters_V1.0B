@@ -100,6 +100,21 @@ After patching, `python -c "from sensors.kinect_v2 import pykinect2_available;
 print(pykinect2_available())"` prints `True`. Without the SDK/binding the
 sensor imports cleanly and `open()` reports an honest failure.
 
+### Cone-collapse firing pattern (no hardware)
+
+The "bzzt" shot — a wide cone homes in, collapses to a line, blanks, then
+fires — is `laser/shot_patterns/cone_collapse.py`, driven live by
+`LaserManager.engage_cone`. Demo and tune it offline:
+
+```powershell
+python scripts/cone_demo.py                          # CSV per trajectory
+python scripts/cone_demo.py --mode fire --trajectory moving   # dry-run fire
+python scripts/cone_demo.py --mode fire --lead 0.35 --breach 1.2
+```
+
+Every `ConeCollapseConfig` knob is a `--flag`; persistent defaults live in the
+`CONE_*` block of `config/settings.py`.
+
 ### Diagnostics
 
 - `tools/gopro_stream_helper.ps1` — PowerShell stream start/stop/find helpers

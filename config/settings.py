@@ -180,6 +180,24 @@ SHOT_PATTERN_POWER_PCT: int = 100
 SHOT_PATTERN_CIRCLE_RADIUS_GALVO: int = 30
 SHOT_PATTERN_FIGURE8_SCALE_GALVO: int = 40
 
+# Cone-collapse firing sequence (the "bzzt" pattern — wide cone homes in,
+# collapses to a line, blanks, fires). All operator-tunable; consumed by
+# ConeCollapseConfig.from_settings(). See laser/shot_patterns/cone_collapse.py.
+CONE_SHRINK_DURATION_S: float = 0.80   # wide cone collapsing to a point
+CONE_LINE_DURATION_S: float = 0.08     # tight "locked" micro-sweep
+CONE_DARK_DURATION_S: float = 0.10     # blank — the "trigger pull" beat
+CONE_BZZT_DURATION_S: float = 0.12     # full-power kill pulse
+CONE_R_START_GALVO: int = 80           # initial cone radius (12-bit galvo units)
+CONE_R_MIN_GALVO: int = 6              # tight line/bzzt radius
+CONE_POWER_SHRINK: int = 0x500         # reserved — generators use color tuples
+CONE_POWER_LINE: int = 0x600           # reserved
+CONE_POWER_BZZT: int = 0xFFF           # reserved
+CONE_LEAD_FACTOR: float = 0.20         # cone-center pursuit gain per chunk
+CONE_BREACH_MULTIPLIER: float = 1.5    # breach when target > this * radius out
+CONE_STRETCH_MAX: float = 1.8          # max oval long/short-axis ratio
+CONE_STRETCH_VELOCITY_SCALE: float = 1500.0   # galvo units/s for max stretch
+CONE_MAX_REACQUIRES: int = 2           # breach restarts before LaserManager aborts
+
 
 # ── §10 — Safety ─────────────────────────────────────────────────────────
 SAFETY_ARM_REQUIRED: bool = True

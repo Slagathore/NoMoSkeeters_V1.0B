@@ -4,6 +4,14 @@ The cube scans continuously; we never park the galvo. To dwell on a target
 at (galvo_x, galvo_y) we emit a stream of samples centered on it while
 keeping the galvos moving in a controlled figure.
 
+This package holds two kinds of generator:
+
+  * The stateless `ShotPattern` family (DotRepeat / MicroCircle / FigureEight)
+    — one call produces the whole dwell. Selected via `get_shot_pattern`.
+  * `ConeCollapsePattern` (cone_collapse.py) — a stateful, chunked, multi-phase
+    firing sequence that follows the target live. This is the "bzzt" pattern;
+    `LaserManager.engage_cone` drives it.
+
 Reference: BOOTSTRAP_AMENDMENTS.md §9.11.
 """
 from __future__ import annotations
@@ -108,3 +116,18 @@ def get_shot_pattern(name: str | None = None) -> ShotPattern:
         return SHOT_PATTERNS[name]
     except KeyError:
         raise ValueError(f"unknown shot pattern: {name!r}") from None
+
+
+# The cone-collapse firing sequence lives in its own submodule; re-export the
+# public surface so callers can `from laser.shot_patterns import ...`.
+from laser.shot_patterns.cone_collapse import (        # noqa: E402
+    ChunkResult, ConeCollapseConfig, ConeCollapsePattern, Phase,
+    TrackerSnapshot, simulate_to_csv,
+)
+
+__all__ = [
+    "ShotPattern", "DotRepeat", "MicroCircle", "FigureEight",
+    "SHOT_PATTERNS", "get_shot_pattern", "_sample_count", "_rgb_level",
+    "ConeCollapsePattern", "ConeCollapseConfig", "TrackerSnapshot",
+    "ChunkResult", "Phase", "simulate_to_csv",
+]

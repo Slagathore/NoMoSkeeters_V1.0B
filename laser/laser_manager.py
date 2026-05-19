@@ -18,7 +18,9 @@ from typing import Callable, Optional
 
 from config import settings
 from events.schemas import TargetCommandEvent
-from laser.shot_patterns import ShotPattern, get_shot_pattern
+from laser.shot_patterns import (ConeCollapseConfig, ConeCollapsePattern,
+                                 Phase, ShotPattern, TrackerSnapshot,
+                                 get_shot_pattern)
 from laser.transport import LaserCubeTransport
 from laser.types import COORD_MAX, COORD_MIN
 
@@ -70,6 +72,19 @@ class LaserManager:
         self._pattern = (pattern if isinstance(pattern, ShotPattern)
                          else get_shot_pattern(pattern))
 
+    # ── NORM → GALVO ─────────────────────────────────────────────────────
+
+    def _norm_to_galvo_dac(self, px: float, py: float) -> tuple[int, int]:
+        """NORM coord → 12-bit GALVO DAC pair, via the CoordinateMapper if
+        one is wired in (else NORM is treated as GALVO-norm directly)."""
+        if self._mapper is not None:
+            g = self._mapper.norm_to_galvo(px, py)
+            gx_norm, gy_norm = float(g[0]), float(g[1])
+        else:
+            gx_norm, gy_norm = px, py
+        return (_galvo_norm_to_dac(_clamp01(gx_norm)),
+                _galvo_norm_to_dac(_clamp01(gy_norm)))
+
     # ── Engagement ───────────────────────────────────────────────────────
 
     def shoot(self, x_norm: float, y_norm: float,
@@ -82,14 +97,7 @@ class LaserManager:
         px = x_norm + vx_norm * lag_s
         py = y_norm + vy_norm * lag_s
 
-        # NORM → GALVO-norm → 12-bit DAC.
-        if self._mapper is not None:
-            g = self._mapper.norm_to_galvo(px, py)
-            gx_norm, gy_norm = float(g[0]), float(g[1])
-        else:
-            gx_norm, gy_norm = px, py
-        gx = _galvo_norm_to_dac(_clamp01(gx_norm))
-        gy = _galvo_norm_to_dac(_clamp01(gy_norm))
+        gx, gy = self._norm_to_galvo_dac(px, py)
 
         points = self._pattern.generate(gx, gy, self._dwell_ms,
                                         self._dac_rate, self._power_pct)
@@ -124,6 +132,101 @@ class LaserManager:
             vx_norm=track.state[half], vy_norm=track.state[half + 1],
             track_id=track.track_id,
         )
+
+    # ── Cone-collapse firing sequence (§9.11) ────────────────────────────
+
+    def track_to_cone_snapshot(self, track) -> TrackerSnapshot:
+        """Convert a norm-space TrackedTarget into a galvo-space
+        TrackerSnapshot for the cone-collapse pattern.
+
+        Velocity is finite-differenced through the NORM→GALVO mapping so a
+        non-linear homography is handled correctly (the Jacobian, not a flat
+        scale)."""
+        half = len(track.state) // 2
+        x_norm, y_norm = track.state[0], track.state[1]
+        vx_norm, vy_norm = track.state[half], track.state[half + 1]
+        gx, gy = self._norm_to_galvo_dac(x_norm, y_norm)
+        probe_dt = 0.05
+        gx2, gy2 = self._norm_to_galvo_dac(x_norm + vx_norm * probe_dt,
+                                           y_norm + vy_norm * probe_dt)
+        return TrackerSnapshot(
+            target_x_galvo=float(gx), target_y_galvo=float(gy),
+            target_vx_galvo_per_s=(gx2 - gx) / probe_dt,
+            target_vy_galvo_per_s=(gy2 - gy) / probe_dt,
+            confidence=float(getattr(track, "confidence", 1.0)))
+
+    def engage_cone(self,
+                    snapshot_fn: Callable[[], Optional[TrackerSnapshot]],
+                    *,
+                    config: Optional[ConeCollapseConfig] = None,
+                    on_chunk: Optional[Callable] = None,
+                    allow_reacquire: bool = True,
+                    max_reacquires: Optional[int] = None,
+                    sleep_fn: Callable[[float], None] = time.sleep) -> dict:
+        """Run one full cone-collapse shot — the live "bzzt" firing sequence.
+
+        `snapshot_fn` is polled once per chunk; it returns the freshest
+        galvo-space TrackerSnapshot (use `track_to_cone_snapshot`), or None to
+        signal the track is lost — which aborts the shot. Each chunk is
+        streamed to the cube and the driver sleeps one chunk-duration so the
+        cube ringbuffer stays roughly one chunk deep (no precomputed-shot
+        overrun). On a breach the pattern restarts from the new position up to
+        `max_reacquires` times, then aborts.
+
+        Returns a summary dict: fired, reason, chunks, reacquires.
+        """
+        cfg = config or ConeCollapseConfig.from_settings()
+        if max_reacquires is None:
+            max_reacquires = settings.CONE_MAX_REACQUIRES
+        chunk_dt = cfg.chunk_size / cfg.dac_rate
+
+        snap = snapshot_fn()
+        if snap is None:
+            self._emit({"op": "cone_abort", "reason": "no_initial_track"})
+            return {"fired": False, "reason": "no_initial_track",
+                    "chunks": 0, "reacquires": 0}
+
+        pat = ConeCollapsePattern(cfg, snap)
+        reacquires = 0
+        chunks_sent = 0
+        fired = False
+
+        while not pat.is_done:
+            snap = snapshot_fn()
+            if snap is None:
+                self._emit({"op": "cone_abort", "reason": "track_lost",
+                            "chunks": chunks_sent})
+                return {"fired": fired, "reason": "track_lost",
+                        "chunks": chunks_sent, "reacquires": reacquires}
+
+            chunk = pat.next_chunk(snap)
+
+            if chunk.breach_detected:
+                if allow_reacquire and reacquires < max_reacquires:
+                    reacquires += 1
+                    pat = ConeCollapsePattern(cfg, snap)
+                    self._emit({"op": "cone_reacquire", "n": reacquires})
+                    continue
+                self._emit({"op": "cone_abort", "reason": "breach",
+                            "chunks": chunks_sent, "reacquires": reacquires})
+                return {"fired": fired, "reason": "breach",
+                        "chunks": chunks_sent, "reacquires": reacquires}
+
+            if chunk.points:
+                if not self._transport.send_frame(chunk.points):
+                    _log.error("engage_cone: send_frame failed mid-shot")
+                chunks_sent += 1
+            if chunk.phase == Phase.BZZT:
+                fired = True
+            if on_chunk is not None:
+                on_chunk(chunk)
+            if not pat.is_done:
+                sleep_fn(chunk_dt)
+
+        self._emit({"op": "cone_done", "fired": fired,
+                    "chunks": chunks_sent, "reacquires": reacquires})
+        return {"fired": fired, "reason": "complete",
+                "chunks": chunks_sent, "reacquires": reacquires}
 
     # ── Internal ─────────────────────────────────────────────────────────
 
