@@ -79,10 +79,12 @@ def build_ffmpeg_command(ffmpeg_path: str, hwaccel: Optional[str]) -> list:
     if hwaccel:
         cmd += ["-hwaccel", hwaccel]
     cmd += [
-        "-probesize", "500000",         # identify the stream fast (low startup)
+        "-probesize", "100000",         # startup stream-detect only (small)
         "-analyzeduration", "0",
         "-fflags", "nobuffer",          # no demuxer buffering
         "-flags", "low_delay",          # no decoder reordering buffer
+        "-avioflags", "direct",         # no I/O read-ahead buffer on the pipe
+        "-max_delay", "0",              # no demux reorder/interleave delay
         "-f", "mpegts",
         "-i", "pipe:0",
         "-an",                          # ignore the audio + metadata streams
