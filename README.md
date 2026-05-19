@@ -82,6 +82,8 @@ Cube connected, **eye protection + safety lens on**:
 python scripts/step11_first_light.py                 # safe low-power dot
 python scripts/step11_calibration.py --camera gopro --gopro-ip 172.27.109.51 --decoder ffmpeg
 python scripts/step11_calibration.py --camera kinect --kinect-note "corner shelf"
+python tools/gopro_latency.py --gopro-ip 172.27.109.51   # GoPro command->seen latency
+python tools/kinect_latency.py --stream rgb               # Kinect command->seen latency
 ```
 
 `--camera kinect` calibrates the Kinect's RGB stream to GALVO space (§8.10);
@@ -136,6 +138,8 @@ Every `ConeCollapseConfig` knob is a `--flag`; persistent defaults live in the
 
 - `tools/gopro_stream_helper.ps1` — PowerShell stream start/stop/find helpers
 - `tools/gopro_stream_probe.py` — find which UDP port/IP the camera streams to
+- `tools/gopro_latency.py` — command-to-visible-dot latency for the GoPro feed
+- `tools/kinect_latency.py` — command-to-visible-dot latency for Kinect RGB/IR/depth
 - `lasercube_protocol_probe.py` — LaserCube protocol probe
 - `sha204_cold_test.py` — confirms the cube emits light without an auth handshake
 
