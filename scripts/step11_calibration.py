@@ -111,6 +111,19 @@ def main(argv=None) -> int:
                         help="calibration laser brightness, percent of full "
                              "(default 100). Lower (e.g. 5) gives a crisp dot "
                              "instead of an overexposed bloom.")
+    parser.add_argument("--background", choices=["per-point", "single"],
+                        default="per-point",
+                        help="laser-OFF reference for temporal-diff "
+                             "detection: 'per-point' (fresh each point, "
+                             "robust to auto-exposure drift) or 'single' "
+                             "(one reference for the whole sweep, faster).")
+    parser.add_argument("--hold", type=float, default=None, metavar="SEC",
+                        help="seconds to hold the laser steady per point "
+                             f"(default {settings.CALIBRATION_DWELL_HOLD_S}).")
+    parser.add_argument("--settle", type=float, default=None, metavar="SEC",
+                        help="seconds to wait out camera latency before "
+                             "detecting (default "
+                             f"{settings.CALIBRATION_DWELL_SETTLE_S}).")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
     parser.add_argument("--sensor-id", default="gopro")
     parser.add_argument("--scene", default="bench")
@@ -159,6 +172,11 @@ def main(argv=None) -> int:
     _lp = max(0, min(0xFFF, int(round(0xFFF * args.laser_power / 100.0))))
     laser_rgb = (_lp, _lp, _lp)
     print(f"calibration laser power: {args.laser_power:.0f}%  (rgb={_lp})")
+    _hold = args.hold if args.hold is not None else settings.CALIBRATION_DWELL_HOLD_S
+    _settle = (args.settle if args.settle is not None
+               else settings.CALIBRATION_DWELL_SETTLE_S)
+    print(f"dwell: hold={_hold}s settle={_settle}s  "
+          f"background={args.background}")
 
     rc = 1
     try:
@@ -168,7 +186,9 @@ def main(argv=None) -> int:
             run = run_live_calibration(
                 cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
                 scene=args.scene, mount_tilt_config=args.mount_config,
-                laser_rgb=laser_rgb, on_point=_progress, on_frame=on_frame)
+                laser_rgb=laser_rgb, background_mode=args.background,
+                hold_s=args.hold, settle_s=args.settle,
+                on_point=_progress, on_frame=on_frame)
         except (ValueError, RuntimeError) as exc:
             print(f"\nsweep finished but the homography fit failed: {exc}")
             print("This usually means the camera never cleanly saw the laser "
@@ -197,6 +217,9 @@ def main(argv=None) -> int:
                 targets = live_validation_sweep(cube, camera, depth_m,
                                                 pattern=args.pattern,
                                                 laser_rgb=laser_rgb,
+                                                background_mode=args.background,
+                                                hold_s=args.hold,
+                                                settle_s=args.settle,
                                                 on_point=_progress,
                                                 on_frame=on_frame)
                 print(f"  captured {len(targets)} validation points "

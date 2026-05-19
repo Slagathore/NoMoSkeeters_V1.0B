@@ -239,9 +239,10 @@ def _capture_background(cube, camera, *, settle_s: float, dwell_samples: int,
 def _capture_dot(cube, camera, detector: LaserDotDetector,
                  gx_dac: int, gy_dac: int, rgb: tuple[int, int, int],
                  *, hold_s: float, settle_s: float, dwell_samples: int,
+                 background: Optional[np.ndarray] = None,
                  on_frame: Optional[Callable] = None) -> Optional[DotObservation]:
-    """Capture a laser-OFF reference, then hold the laser STEADY at the
-    galvo coord and detect the dot by temporal difference.
+    """Hold the laser STEADY at the galvo coord and detect the dot by
+    temporal difference against a laser-OFF reference.
 
     The dwell is re-streamed continuously for `hold_s` seconds so the dot
     stays lit the whole time — a single 0.1 s flash is far shorter than the
@@ -249,16 +250,17 @@ def _capture_dot(cube, camera, detector: LaserDotDetector,
     flash-then-read never sees the current point. Detection only starts
     after `settle_s`, by which time the lit dot is in the frames.
 
-    The reference is captured PER POINT, immediately before — a single
-    sweep-wide background drifts out of registration as the GoPro's
-    auto-exposure changes, lighting up high-contrast edges in the diff.
+    `background`: if given, used as the laser-OFF reference (single-reference
+    mode). If None, a fresh reference is captured here, per point — robust to
+    the GoPro's auto-exposure drift over a long sweep.
 
     `on_frame`, if given, is called with every camera frame (rgb) — used by
     the step11 script's --view option.
     """
-    background = _capture_background(cube, camera, settle_s=settle_s,
-                                     dwell_samples=dwell_samples,
-                                     on_frame=on_frame)
+    if background is None:
+        background = _capture_background(cube, camera, settle_s=settle_s,
+                                         dwell_samples=dwell_samples,
+                                         on_frame=on_frame)
     r, g, b = rgb
     dwell = [LaserPoint(x=gx_dac, y=gy_dac, r=r, g=g, b=b)] * dwell_samples
     start = time.monotonic()
@@ -294,6 +296,7 @@ def run_live_calibration(cube, camera, *,
                          hold_s: Optional[float] = None,
                          dwell_samples: int = 3000,
                          laser_rgb: Optional[tuple] = None,
+                         background_mode: str = "per-point",
                          on_point: Optional[PointCallback] = None,
                          on_frame: Optional[Callable] = None) -> CalibrationRun:
     """Calibrate against the real cube + camera (Step 11).
@@ -313,6 +316,13 @@ def run_live_calibration(cube, camera, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
+    # "single": one laser-OFF reference for the whole sweep (faster, but
+    # drifts as the camera auto-exposes). "per-point": fresh reference each
+    # point inside _capture_dot (slower, robust). See _capture_dot.
+    shared_bg = (_capture_background(cube, camera, settle_s=settle_s,
+                                     dwell_samples=dwell_samples,
+                                     on_frame=on_frame)
+                 if background_mode == "single" else None)
 
     galvo_pts: list[Point] = []
     observed: list[Point] = []
@@ -321,6 +331,7 @@ def run_live_calibration(cube, camera, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
+                           background=shared_bg,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)
@@ -357,6 +368,7 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                           hold_s: Optional[float] = None,
                           dwell_samples: int = 3000,
                           laser_rgb: Optional[tuple] = None,
+                          background_mode: str = "per-point",
                           on_point: Optional[PointCallback] = None,
                           on_frame: Optional[Callable] = None) -> list[TestTarget]:
     """Sweep the pattern once at a known depth; return TestTargets for
@@ -372,6 +384,10 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
         settings.CALIBRATION_LASER_R, settings.CALIBRATION_LASER_G,
         settings.CALIBRATION_LASER_B)
     galvo_path = calibration_pattern_path(pattern)
+    shared_bg = (_capture_background(cube, camera, settle_s=settle_s,
+                                     dwell_samples=dwell_samples,
+                                     on_frame=on_frame)
+                 if background_mode == "single" else None)
 
     targets: list[TestTarget] = []
     for idx, (gx, gy) in enumerate(galvo_path):
@@ -379,6 +395,7 @@ def live_validation_sweep(cube, camera, depth_m: float, *,
                            galvo_norm_to_dac(gx), galvo_norm_to_dac(gy), rgb,
                            hold_s=hold_s, settle_s=settle_s,
                            dwell_samples=dwell_samples,
+                           background=shared_bg,
                            on_frame=on_frame)
         if on_point is not None:
             on_point(idx, len(galvo_path), obs)

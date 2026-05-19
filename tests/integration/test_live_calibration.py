@@ -78,6 +78,15 @@ def test_live_calibration_fits_and_saves(tmp_path):
     assert run.mapper.residual_norm < 0.01
 
 
+def test_live_calibration_single_background_mode(tmp_path):
+    cube, camera, _ = _bench()
+    run = run_live_calibration(cube, camera, pattern="grid", out_dir=tmp_path,
+                               dwell_samples=1, hold_s=0.05, settle_s=0.0,
+                               background_mode="single")
+    assert run.mapper.n_points == 25                 # one shared reference
+    assert run.mapper.residual_norm < 0.01
+
+
 def test_live_calibration_raises_when_no_dots(tmp_path):
     cube, camera, _ = _bench(blank=True)             # camera sees nothing
     import pytest
