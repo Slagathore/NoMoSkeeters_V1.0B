@@ -81,24 +81,41 @@ Cube connected, **eye protection + safety lens on**:
 ```powershell
 python scripts/step11_first_light.py                 # safe low-power dot
 python scripts/step11_calibration.py --camera gopro --gopro-ip 172.27.109.51 --decoder ffmpeg
+python scripts/step11_calibration.py --camera kinect --kinect-note "corner shelf"
 ```
+
+`--camera kinect` calibrates the Kinect's RGB stream to GALVO space (§8.10);
+the Kinect→GoPro extrinsic (`targeting/extrinsics.py`) then ties the two
+sensors together for fusion.
 
 ### Kinect v2 — pykinect2 binding
 
 `KinectV2Sensor` needs the Kinect for Windows SDK 2.0 plus the `pykinect2`
-Python binding. `pykinect2` ships pre-built ctypes wrappers that two things
-break on 64-bit Python 3.11; both must be patched **in the installed package**
-(`...\site-packages\pykinect2\PyKinectV2.py`) — and re-applied if `pykinect2`
-is ever reinstalled:
+Python binding. `pykinect2` is unmaintained (last release 2018) and does not
+run as-shipped on 64-bit Python 3.11. Five fixes are applied **in the
+installed package** — search `...\site-packages\pykinect2\` for the marker
+comment `NoMoSkeeters patch` to find every site; all must be re-applied if
+`pykinect2` is ever reinstalled.
 
+`PyKinectV2.py`:
 1. `assert sizeof(tagSTATSTG) == 72` — the struct is 80 bytes on 64-bit
-   Python. Relax to `assert sizeof(tagSTATSTG) in (72, 80)`.
+   Python. Relaxed to `assert sizeof(tagSTATSTG) in (72, 80)`.
 2. `from comtypes import _check_version; _check_version('')` — comtypes 1.4
-   rejects the stale generated version stamp. Comment the call out.
+   rejects the stale generated version stamp. Commented out.
 
-After patching, `python -c "from sensors.kinect_v2 import pykinect2_available;
-print(pykinect2_available())"` prints `True`. Without the SDK/binding the
-sensor imports cleanly and `open()` reports an honest failure.
+`PyKinectRuntime.py`:
+3. `time.clock()` (9 call sites) was removed in Python 3.8. A shim near the
+   top aliases `time.clock = time.perf_counter`.
+4. The infrared frame source/reader/event are never wired up — added an
+   `InfraredFrameSource` setup block mirroring the depth block.
+5. `handle_infrared_arrived` is a no-op stub and `get_last_infrared_frame`
+   is missing entirely — implemented both (mirroring depth) so IR frames
+   actually land.
+
+After patching, `python tools/kinect_probe.py` opens the sensor and confirms
+all three streams (RGB 1920×1080, depth + IR 512×424) are live. Without the
+SDK/binding the sensor still imports cleanly and `open()` reports an honest
+failure.
 
 ### Cone-collapse firing pattern (no hardware)
 

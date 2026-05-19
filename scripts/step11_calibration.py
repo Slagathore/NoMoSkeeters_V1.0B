@@ -71,6 +71,11 @@ def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
         cam = GoProSensor(
             control=GoProInterface(ip=gopro_ip, webcam_fov=fov),
             decoder=decoder, record_path=record)
+    elif kind == "kinect":
+        # Kinect v2 over USB — calibration observes its 1920x1080 RGB stream
+        # (§8.10). Imported lazily so the script still runs without the SDK.
+        from sensors.kinect_v2 import KinectV2Sensor
+        cam = KinectV2Sensor()
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -80,7 +85,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="LaserCube live calibration.")
     parser.add_argument("--ip", default="169.254.40.83")
     parser.add_argument("--src-ip", default="auto")
-    parser.add_argument("--camera", choices=["local", "gopro"], default="local")
+    parser.add_argument("--camera", choices=["local", "gopro", "kinect"],
+                        default="local")
     parser.add_argument("--cam-index", type=int, default=0)
     parser.add_argument("--gopro-ip", default="10.5.5.9",
                         help="GoPro HTTP API IP. USB-tethered is 172.X.Y.51 "
@@ -125,10 +131,26 @@ def main(argv=None) -> int:
                              "detecting (default "
                              f"{settings.CALIBRATION_DWELL_SETTLE_S}).")
     parser.add_argument("--pattern", default=settings.CALIBRATION_PATTERN)
-    parser.add_argument("--sensor-id", default="gopro")
+    parser.add_argument("--sensor-id", default=None,
+                        help="calibration sensor_id; defaults to match "
+                             "--camera (gopro / kinect_v2 / local_cam).")
+    parser.add_argument("--kinect-note", default=None, metavar="TEXT",
+                        help="--camera kinect: a placement note stored in the "
+                             "calibration (§8.10 — the fit dies if the Kinect "
+                             "is bumped, so record where it sat).")
     parser.add_argument("--scene", default="bench")
     parser.add_argument("--mount-config", default="bench")
     args = parser.parse_args(argv)
+
+    # sensor_id defaults to the camera it was shot with.
+    if args.sensor_id is None:
+        args.sensor_id = {"gopro": "gopro", "kinect": "kinect_v2",
+                          "local": "local_cam"}[args.camera]
+    # Kinect calibration runs against the RGB stream (§8.10); record it +
+    # any placement note so a reload knows the fit's provenance.
+    kinect_stream = "rgb" if args.camera == "kinect" else ""
+    kinect_pose = ({"operator_note": args.kinect_note}
+                   if args.kinect_note else None)
 
     print("=" * 60)
     print("  Step 11b — LIVE CALIBRATION")
@@ -186,6 +208,7 @@ def main(argv=None) -> int:
             run = run_live_calibration(
                 cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
                 scene=args.scene, mount_tilt_config=args.mount_config,
+                stream=kinect_stream, kinect_relative_pose=kinect_pose,
                 laser_rgb=laser_rgb, background_mode=args.background,
                 hold_s=args.hold, settle_s=args.settle,
                 on_point=_progress, on_frame=on_frame)
