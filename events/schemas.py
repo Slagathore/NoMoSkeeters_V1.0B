@@ -106,6 +106,42 @@ class GoProStatusEvent:
 
 
 @dataclass(frozen=True)
+class PhoneCameraChangedEvent:
+    """Emitted when the phone-as-sensor switches active lens (wide ↔ main ↔
+    telephoto). Carries the new camera_id and the per-camera intrinsics so
+    the tracker can invalidate norm-space tracks across the discontinuity
+    (PHONE_SENSOR_BOOTSTRAP.md §3.3, §3.5)."""
+    timestamp: float
+    camera_id: str
+    width: int
+    height: int
+    fov_h_deg: float = 0.0
+    has_optical_zoom: bool = False
+    optical_zoom_factor: float = 1.0
+
+
+@dataclass(frozen=True)
+class PhoneFocusEvent:
+    """Phone AF state change. Recorded for replay; rarely used for live
+    decisions."""
+    timestamp: float
+    camera_id: str
+    state: str           # "settled" | "searching" | "locked" | "unlocked"
+    region: Optional[Tuple[float, float, float, float]] = None  # (x,y,w,h) norm
+
+
+@dataclass(frozen=True)
+class PhoneThermalEvent:
+    """Phone thermal state. Safety may gate firing when severity rises
+    (PHONE_SENSOR_BOOTSTRAP.md §4.5)."""
+    timestamp: float
+    camera_id: str
+    state: str           # "none" | "light" | "moderate" | "severe" | "critical"
+    battery_percent: int = -1
+    reachable: bool = True
+
+
+@dataclass(frozen=True)
 class LatencySample:
     """One end-to-end pipeline latency measurement."""
     timestamp: float

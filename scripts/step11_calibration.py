@@ -65,7 +65,8 @@ _FOV_CODES = {"default": None, "wide": 0, "linear": 4, "superview": 3}
 
 
 def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
-                 fov: object, record: object):
+                 fov: object, record: object, phone_camera: str,
+                 phone_ip: object):
     if kind == "gopro":
         # HTTP control over the camera's IP (USB-tethered = .51).
         cam = GoProSensor(
@@ -76,6 +77,16 @@ def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
         # (§8.10). Imported lazily so the script still runs without the SDK.
         from sensors.kinect_v2 import KinectV2Sensor
         cam = KinectV2Sensor()
+    elif kind == "phone":
+        # Phone-as-sensor over TCP+UDP (PHONE_SENSOR_BOOTSTRAP). Calibrate
+        # ONE lens per session — sensor_id becomes `phone_<lens>` so each
+        # profile is stored separately (§3.4 Approach B).
+        from phone_sensor.client import PhoneSensorClient
+        from sensors.phone import PhoneSensor
+        client_kwargs = {"host": phone_ip} if phone_ip else {}
+        cam = PhoneSensor(
+            client=PhoneSensorClient(**client_kwargs),
+            active_camera=phone_camera, record_path=record)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -85,9 +96,19 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="LaserCube live calibration.")
     parser.add_argument("--ip", default="169.254.40.83")
     parser.add_argument("--src-ip", default="auto")
-    parser.add_argument("--camera", choices=["local", "gopro", "kinect"],
+    parser.add_argument("--camera",
+                        choices=["local", "gopro", "kinect", "phone"],
                         default="local")
     parser.add_argument("--cam-index", type=int, default=0)
+    parser.add_argument("--phone-camera",
+                        choices=["ultrawide", "main", "telephoto"],
+                        default=settings.PHONE_DEFAULT_CAMERA,
+                        help="--camera phone: which lens to calibrate. "
+                             "sensor_id becomes phone_<lens>, so each lens "
+                             "stores its own homography profile (§3.4).")
+    parser.add_argument("--phone-ip", default=None,
+                        help="--camera phone: phone's TCP address. "
+                             f"Default {settings.PHONE_IP}.")
     parser.add_argument("--gopro-ip", default="10.5.5.9",
                         help="GoPro HTTP API IP. USB-tethered is 172.X.Y.51 "
                              "(run Find-GoPro to discover); 10.5.5.9 is the "
@@ -145,7 +166,8 @@ def main(argv=None) -> int:
     # sensor_id defaults to the camera it was shot with.
     if args.sensor_id is None:
         args.sensor_id = {"gopro": "gopro", "kinect": "kinect_v2",
-                          "local": "local_cam"}[args.camera]
+                          "local": "local_cam",
+                          "phone": f"phone_{args.phone_camera}"}[args.camera]
     # Kinect calibration runs against the RGB stream (§8.10); record it +
     # any placement note so a reload knows the fit's provenance.
     kinect_stream = "rgb" if args.camera == "kinect" else ""
@@ -167,7 +189,8 @@ def main(argv=None) -> int:
         return 1
 
     camera = _open_camera(args.camera, args.cam_index, args.gopro_ip,
-                          args.decoder, _FOV_CODES[args.fov], args.record)
+                          args.decoder, _FOV_CODES[args.fov], args.record,
+                          args.phone_camera, args.phone_ip)
     if camera is None:
         print(f"FAIL: could not open {args.camera} camera")
         cube.disconnect()

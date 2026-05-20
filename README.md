@@ -28,7 +28,8 @@ bench calibration, the GUI, and the web monitor.
 | Device | Connection | Notes |
 |---|---|---|
 | WiFi LaserCube 2.5W (FW 0.23) | Direct Ethernet (APIPA) | Laser output + galvo |
-| GoPro Hero 13 Black | USB-tethered | Primary targeting camera |
+| Phone (OnePlus 15) | TCP+UDP (NoMoSkeeters Sensor Protocol v1) | **Primary targeting camera** — replaces GoPro |
+| GoPro Hero 13 Black | USB-tethered | Legacy targeting (kept for comparison + fallback) |
 | Kinect v2 | USB (+ Kinect SDK) | Safety / 3D scene |
 
 ### LaserCube
@@ -90,6 +91,27 @@ python tools/kinect_latency.py --stream rgb               # Kinect command->seen
 the Kinect→GoPro extrinsic (`targeting/extrinsics.py`) then ties the two
 sensors together for fusion.
 
+### Phone as primary targeting camera
+
+PC-side support for the OnePlus 15 companion app — the phone is a
+dumb-on-purpose smart sensor: the PC sends commands (switch lens, set AF,
+start stream) over TCP; the phone ships frames over UDP. Spec:
+[PHONE_SENSOR_BOOTSTRAP.md](PHONE_SENSOR_BOOTSTRAP.md).
+
+```powershell
+python tools/phone_probe.py                                 # capabilities + fps
+python tools/phone_probe.py --phone-camera telephoto --view
+python tools/phone_probe.py --switch-camera telephoto       # lens-switch dance
+python tools/phone_latency.py                               # command->seen latency
+python scripts/step11_calibration.py --camera phone --phone-camera main
+```
+
+`--phone-camera {ultrawide,main,telephoto}` chooses which lens to calibrate;
+sensor_id becomes `phone_<lens>` so each lens stores its own homography
+profile (Approach B, §3.4). The PC code is in place and tested with a
+loopback fake phone; **the Android companion app is the missing half** — see
+the bootstrap for what to build.
+
 ### Kinect v2 — pykinect2 binding
 
 `KinectV2Sensor` needs the Kinect for Windows SDK 2.0 plus the `pykinect2`
@@ -134,11 +156,40 @@ python scripts/cone_demo.py --mode fire --lead 0.35 --breach 1.2
 Every `ConeCollapseConfig` knob is a `--flag`; persistent defaults live in the
 `CONE_*` block of `config/settings.py`.
 
+To fire the same cone pattern on the real LaserCube, with live hardware
+pre-flight and a typed confirmation:
+
+```powershell
+python scripts/cone_live.py --power-pct 5
+python scripts/cone_live.py --trajectory moving --power-pct 5
+python scripts/cone_live.py --trajectory jinking --power-pct 5
+python scripts/cone_live.py --mosquito-5s --power-pct 5
+python scripts/cone_live.py --mosquito-5s --mosquito-speed 1.5 --power-pct 5
+```
+
+Keep `--power-pct` low while inspecting the acquisition shape. It scales the
+shrink/line phases only; the final `bzzt` defaults to full power and can be
+overridden separately:
+
+```powershell
+python scripts/cone_live.py --power-pct 5 --bzzt-power-pct 25
+python scripts/cone_live.py --power-pct 5 --bzzt-power-pct 100
+```
+
+`--mosquito-5s` stretches the acquisition phase to five seconds and follows a
+synthetic target that makes short, fast direction-changing darts before
+settling for the final shot. Use `--mosquito-speed` to compress that path in
+time for faster apparent flight. You can still override the defaults with
+`--shrink`, `--r-start`, `--lead`, `--breach`, and `--stretch-max`.
+
 ### Diagnostics
 
+- `tools/phone_probe.py` — phone capabilities + per-stream fps; doubles as the SensorManager wiring check
+- `tools/phone_latency.py` — command-to-visible-dot latency for the phone feed
 - `tools/gopro_stream_helper.ps1` — PowerShell stream start/stop/find helpers
 - `tools/gopro_stream_probe.py` — find which UDP port/IP the camera streams to
 - `tools/gopro_latency.py` — command-to-visible-dot latency for the GoPro feed
+- `tools/kinect_probe.py` — Kinect RGB/depth/IR liveness, direct or via SensorManager
 - `tools/kinect_latency.py` — command-to-visible-dot latency for Kinect RGB/IR/depth
 - `lasercube_protocol_probe.py` — LaserCube protocol probe
 - `sha204_cold_test.py` — confirms the cube emits light without an auth handshake
@@ -146,17 +197,18 @@ Every `ConeCollapseConfig` knob is a `--flag`; persistent defaults live in the
 ## Repo layout
 
 ```
-config/      Settings (single source of truth) + JSON override manager
-events/      Bus event dataclasses
-sensors/     GoPro, Kinect, local-cam, replay drivers + SensorManager
-detection/   Detector + classifier
-tracking/    Kalman/IoU tracker, assignment, cross-sensor fusion
-targeting/   Calibration, coordinate mapping, sweep patterns
-laser/       LaserCube protocol, transports, heartbeat, shot patterns
-safety/      No-fire zones, eligibility, decisions
-scripts/     Bench runners (first-light, calibration, acceptance)
-tools/       Probes, sensor comparison, GoPro stream/view helpers
-tests/       Unit + integration tests, golden fixtures
+config/        Settings (single source of truth) + JSON override manager
+events/        Bus event dataclasses
+sensors/       Phone, GoPro, Kinect, local-cam, replay drivers + SensorManager
+phone_sensor/  PC side of NoMoSkeeters Sensor Protocol v1 (TCP commands, UDP frames)
+detection/     Detector + classifier
+tracking/      Kalman/IoU tracker, assignment, cross-sensor fusion
+targeting/     Calibration, coordinate mapping, sweep patterns
+laser/         LaserCube protocol, transports, heartbeat, shot patterns
+safety/        No-fire zones, eligibility, decisions
+scripts/       Bench runners (first-light, calibration, acceptance)
+tools/         Probes, sensor comparison, stream/view helpers
+tests/         Unit + integration tests, golden fixtures
 ```
 
 The design specification lives in `BOOTSTRAP.md` and its two amendment

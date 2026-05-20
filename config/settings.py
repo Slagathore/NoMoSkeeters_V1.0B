@@ -149,6 +149,27 @@ CALIBRATION_DRAGLINE_MULTI_SPEED: bool = True
 CALIBRATION_DRAGLINE_SPEEDS: list = [0.05, 0.20, 0.50, 1.00]
 LATENCY_SOFTWARE_LAG_MS: float = 0.0   # populated by drag-line calibration
 
+# Phone-as-sensor (PHONE_SENSOR_BOOTSTRAP.md). Replaces the GoPro as default
+# targeting camera; speaks NoMoSkeeters Sensor Protocol v1 over TCP+UDP.
+PHONE_PROTOCOL_VERSION: int = 1
+PHONE_IP: str = "192.168.1.50"           # phone's reachable address (USB-NCM
+                                          # or wifi); override per session
+PHONE_CMD_PORT: int = 45470              # TCP — commands + events + heartbeat
+PHONE_FRAME_PORT: int = 45471            # UDP — frame packets
+PHONE_BIND_IP: str = "0.0.0.0"           # PC's local bind for the UDP frame
+                                          # socket. Mirrors the GoPro lesson:
+                                          # set explicit on a multi-NIC host.
+PHONE_DEFAULT_CAMERA: str = "main"       # "ultrawide"|"main"|"telephoto"
+PHONE_DEFAULT_STREAM_MODE: str = "h264_lowlat"   # raw_yuv|h264_lowlat|h264_quality
+PHONE_DEFAULT_STREAM_WIDTH: int = 1920
+PHONE_DEFAULT_STREAM_HEIGHT: int = 1080
+PHONE_DEFAULT_STREAM_FPS: int = 60
+PHONE_HEARTBEAT_INTERVAL_S: float = 1.0  # ping cadence; 3 misses = safe state
+PHONE_HEARTBEAT_TIMEOUT_S: float = 3.5   # mark unhealthy after this much silence
+PHONE_RECONNECT_BACKOFF_S: float = 1.0   # TCP reconnect delay (capped at 8s)
+PHONE_FRAME_QUEUE_MAX: int = 1           # latest-only, like the GoPro decoder
+PHONE_FFMPEG_HWACCEL: Optional[str] = "cuda"   # NVDEC for h264; None = software
+
 # Kinect calibration (v0.2.1 §8.10).
 KINECT_CALIBRATION_REQUIRED_FOR_TARGETING: bool = True
 KINECT_CALIBRATION_PROMPT_ON_STARTUP: bool = True
