@@ -27,12 +27,24 @@ USER_CONFIG_PATH: Path = USER_DATA_DIR / "config.json"
 
 
 # ── §3.3 / §5 — Sensor roles + targeting mode (v0.2.1) ───────────────────
-TARGETING_MODE: str = "gopro_only"   # "gopro_only" | "kinect_only" | "fused_interp"
+# TARGETING_MODE is a named preset consumed by sensors.factory.build_sensor_manager().
+# Solo modes run one targeting sensor; fusion modes run several and let the
+# cross-sensor fusion layer combine them. "config" means "ignore the preset and
+# use SENSOR_ROLES below verbatim". See sensors/factory.py MODE_PRESETS.
+TARGETING_MODE: str = "config"
+#   solo:   "gopro_only" | "kinect_only" | "ov9281_only" | "phone_only" | "local_only"
+#   fusion: "ov9281_kinect" | "phone_kinect" | "gopro_kinect" | "fused_interp"
+#   "config" → honour SENSOR_ROLES exactly.
 
+# Per-sensor selection the factory honours when TARGETING_MODE == "config".
+# Value is the SensorRole ("targeting" | "safety" | "fallback" | "off") or
+# "auto" (build with the sensor's natural default role; skip if it won't open).
 SENSOR_ROLES: dict = {
-    "gopro":     "auto",
+    "gopro":     "off",       # default witness/kill-cam now, not targeting
     "kinect_v2": "auto",
-    "local_cam": "auto",
+    "ov9281":    "auto",      # V1 ground-truth targeting camera
+    "phone":     "off",       # needs the companion app running
+    "local_cam": "off",
 }
 
 SENSOR_STREAM_ROLES: dict = {
@@ -40,6 +52,8 @@ SENSOR_STREAM_ROLES: dict = {
     "kinect_rgb":   "targeting",
     "kinect_ir":    "targeting",
     "kinect_depth": "world_attribution",
+    "ov9281":       "targeting",
+    "phone":        "targeting",
     "local_cam":    "off",
 }
 
@@ -170,6 +184,44 @@ PHONE_HEARTBEAT_TIMEOUT_S: float = 3.5   # mark unhealthy after this much silenc
 PHONE_RECONNECT_BACKOFF_S: float = 1.0   # TCP reconnect delay (capped at 8s)
 PHONE_FRAME_QUEUE_MAX: int = 1           # latest-only, like the GoPro decoder
 PHONE_FFMPEG_HWACCEL: Optional[str] = "cuda"   # NVDEC for h264; None = software
+
+# ── OV9281 global-shutter UVC camera — V1 ground-truth targeting sensor ──
+# OmniVision OV9281, monochrome global shutter, MJPEG over USB 2.0 (UVC, no
+# driver). Global shutter = no rolling-shutter smear on fast targets; IR-
+# sensitive so it pairs with the Kinect IR flood for darkness ops. The lens is
+# a manual 5-50mm CS varifocal. Frame is delivered in the SensorFrame.rgb slot
+# (cv2 hands back 3-channel BGR even for a mono MJPEG source).
+OV9281_DEVICE_INDEX: int = 0           # cv2.VideoCapture index (find via probe)
+OV9281_BACKEND: str = "auto"           # "auto"|"dshow"|"msmf"|"v4l2"|"any"
+                                       #   auto → DSHOW on Windows (best UVC
+                                       #   MJPEG/high-fps support), else ANY.
+OV9281_FOURCC: str = "MJPG"            # the camera streams MJPEG
+OV9281_WIDTH: int = 640
+OV9281_HEIGHT: int = 480
+OV9281_FPS: int = 210                  # 640x480 @ 210fps mode (datasheet)
+                                       #   1280x800@120 / 320x240@420 / 160x120@640
+OV9281_AUTO_EXPOSURE: bool = False     # lock exposure for crisp fast frames
+OV9281_EXPOSURE: float = -6.0          # backend-dependent: DSHOW≈log2(sec)
+                                       #   (-6 ≈ 1/64s); v4l2≈100µs units. For
+                                       #   210fps the exposure MUST be < ~4.5ms;
+                                       #   tune per rig + lighting.
+OV9281_GAIN: float = 0.0               # raise if the locked-exposure image is dark
+OV9281_TIMESTAMP_UNCERTAINTY_MS: float = 5.0   # ~OV9281 25ms latency floor / fast
+
+# ── GoPro slow-mo kill-cam (witness recorder, NOT a targeting sensor) ────
+# On each laser shot the kill-cam triggers the GoPro to capture/mark a slow-mo
+# clip of the engagement. The GoPro can't stream-as-webcam and record at once,
+# so this uses it as a dedicated witness camera. Open GoPro HTTP; preset ids are
+# firmware-specific (HARDWARE_FINDINGS §2.4) — verify on the bench.
+KILLCAM_ENABLED: bool = False
+KILLCAM_GOPRO_IP: str = "172.27.109.51"        # USB-tethered Hero 13 (.51)
+KILLCAM_MODE: str = "per_shot"                 # "per_shot" | "continuous_hilight"
+KILLCAM_SLOMO_PRESET_ID: int = 0xE503          # GoPro slo-mo preset (verify per model)
+KILLCAM_RECORD_SECONDS: float = 3.0            # per_shot: clip length after a fire
+KILLCAM_PREROLL_SECONDS: float = 0.0           # reserved (continuous mode lead-in)
+KILLCAM_DEBOUNCE_SECONDS: float = 2.0          # ignore re-triggers within this window
+KILLCAM_TRIGGER_ON: str = "fired"              # "fired" (only real kill pulses) |
+                                               #   "any_shot" (every shoot/cone)
 
 # Kinect calibration (v0.2.1 §8.10).
 KINECT_CALIBRATION_REQUIRED_FOR_TARGETING: bool = True

@@ -261,3 +261,20 @@ def test_status_poll_emits_unreachable_when_state_is_none():
     time.sleep(0.05)
     cam.close()
     assert received and received[0].reachable is False
+
+
+# ── Slow-mo kill-cam controls ──────────────────────────────────────────────
+
+def test_slomo_controls_hit_open_gopro_endpoints():
+    log: list[str] = []
+    iface = _iface(http_log=log)
+    assert iface.load_preset(0xE503) is True       # 0xE503 == 58627
+    assert iface.start_recording() is True
+    assert iface.stop_recording() is True
+    assert iface.hilight() is True
+    assert log == [
+        "http://10.5.5.9:8080/gopro/camera/presets/load?id=58627",
+        "http://10.5.5.9:8080/gopro/camera/shutter/start",
+        "http://10.5.5.9:8080/gopro/camera/shutter/stop",
+        "http://10.5.5.9:8080/gopro/media/hilight/moment",
+    ]

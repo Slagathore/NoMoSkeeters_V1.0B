@@ -78,7 +78,7 @@ def test_all_returns_snapshot():
     snap = cm.all()
     assert "LASERCUBE_DEFAULT_IP" in snap
     assert "TARGETING_MODE" in snap
-    assert snap["TARGETING_MODE"] == "gopro_only"
+    assert snap["TARGETING_MODE"] == "config"      # default honours SENSOR_ROLES
 
 
 def test_unknown_json_keys_silently_ignored(tmp_path):

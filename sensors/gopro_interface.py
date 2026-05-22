@@ -186,6 +186,32 @@ class GoProInterface:
             _log.error("gopro: keep-alive sendto failed: %s", exc)
             return False
 
+    # ── Slow-mo kill-cam controls (witness recording, not webcam) ────────
+    # Open GoPro HTTP. Preset ids are firmware-specific (HARDWARE_FINDINGS §2.4
+    # documents presets/load?id=1000 for plain video) — verify the slo-mo id on
+    # the bench. All best-effort: they return the HTTP success bool.
+
+    def load_preset(self, preset_id: int) -> bool:
+        """Load a camera preset by id (e.g. a slo-mo preset)."""
+        return self._http_get(
+            self._url(f"/gopro/camera/presets/load?id={preset_id}"),
+            self._timeout)
+
+    def start_recording(self) -> bool:
+        """Press the shutter — begin recording to the SD card."""
+        return self._http_get(self._url("/gopro/camera/shutter/start"),
+                              self._timeout)
+
+    def stop_recording(self) -> bool:
+        """Release the shutter — stop recording."""
+        return self._http_get(self._url("/gopro/camera/shutter/stop"),
+                              self._timeout)
+
+    def hilight(self) -> bool:
+        """Tag a HiLight moment in the current recording (jump-to marker)."""
+        return self._http_get(self._url("/gopro/media/hilight/moment"),
+                              self._timeout)
+
     def get_state(self) -> Optional[GoProStatusEvent]:
         """Poll GET /gopro/camera/state and parse the §2.4 status fields.
 
