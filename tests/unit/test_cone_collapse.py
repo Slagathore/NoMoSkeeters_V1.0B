@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -14,9 +15,9 @@ from laser.transports.dry_run import DryRunTransport
 
 def _fast_cfg(**over) -> ConeCollapseConfig:
     """A short pattern so tests run in a handful of chunks per phase."""
-    base = dict(shrink_duration_s=0.05, line_duration_s=0.02,
-                dark_duration_s=0.02, bzzt_duration_s=0.02,
-                dac_rate=30000, chunk_size=140)
+    base: dict[str, Any] = dict(shrink_duration_s=0.05, line_duration_s=0.02,
+                                dark_duration_s=0.02, bzzt_duration_s=0.02,
+                                dac_rate=30000, chunk_size=140)
     base.update(over)
     return ConeCollapseConfig(**base)
 

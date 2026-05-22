@@ -134,7 +134,7 @@ class _FakeExtrinsic:
 
 
 def test_extrinsic_remaps_src_sensor_into_shared_frame():
-    fus = CrossSensorFusion(extrinsic=_FakeExtrinsic())
+    fus = CrossSensorFusion(extrinsic=_FakeExtrinsic())  # type: ignore[arg-type]
     for i in range(3):
         t = 0.02 * i
         fus.ingest_detection(_det("gopro", t, 0.50, 0.50))

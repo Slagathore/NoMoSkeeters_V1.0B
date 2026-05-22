@@ -48,7 +48,8 @@ def test_capabilities_from_dict():
     })
     assert caps.phone_model == "OnePlus 15"
     assert len(caps.cameras) == 2
-    assert caps.camera("telephoto").optical_zoom_factor == 3.0
+    tele = caps.camera("telephoto")
+    assert tele is not None and tele.optical_zoom_factor == 3.0
     assert caps.camera("missing") is None
 
 

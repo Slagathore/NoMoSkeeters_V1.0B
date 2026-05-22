@@ -88,12 +88,13 @@ class FakeControl:
 def test_gopro_open_read_close_with_control(monkeypatch):
     monkeypatch.setattr(gopro_mod, "_KEEPALIVE_INTERVAL_S", 0.01)
     control = FakeControl()
-    cam = GoProSensor(control=control,
+    cam = GoProSensor(control=control,  # type: ignore[arg-type]
                       capture_factory=lambda: FakeCapture([_image()] * 3))
     assert cam.open() is True
     assert control.started is True
 
     frame = cam.read()
+    assert frame is not None
     assert frame.sensor_id == "gopro"
     assert frame.timestamp_uncertainty_ms == 20.0
     assert cam.role == SensorRole.TARGETING
@@ -129,11 +130,15 @@ def test_kinect_capabilities_and_role():
 def test_kinect_world_projection():
     kinect = KinectV2Sensor()
     # A pixel at the principal point projects straight ahead at depth Z.
-    x, y, z = kinect.world_position(255, 205, depth_m=2.0)
+    pos = kinect.world_position(255, 205, depth_m=2.0)
+    assert pos is not None
+    x, y, z = pos
     assert abs(x) < 0.01 and abs(y) < 0.01
     assert z == pytest.approx(2.0)
     # An off-centre pixel projects off-axis.
-    x2, _, _ = kinect.world_position(455, 205, depth_m=2.0)
+    pos2 = kinect.world_position(455, 205, depth_m=2.0)
+    assert pos2 is not None
+    x2, _, _ = pos2
     assert x2 > 0.1
     assert kinect.world_position(0, 0, depth_m=0.0) is None
 

@@ -64,6 +64,7 @@ class _FakeDecoder:
         self.released = False
         self.width = 0
         self.height = 0
+        self.codec = ""
 
     def isOpened(self):
         return not self.released
@@ -137,7 +138,8 @@ def test_open_fails_when_set_camera_fails():
 def test_open_picks_h264_codec_for_h264_modes():
     client = _FakeClient(stream_mode="h264_lowlat")
     sensor, decoder = _build_sensor(client)
-    sensor = PhoneSensor(client=client, decoder_factory=lambda *, width, height,
+    sensor = PhoneSensor(client=client,  # type: ignore[arg-type]
+                          decoder_factory=lambda *, width, height,
                           codec: setattr(decoder, "codec", codec) or decoder,
                           stream_mode="h264_lowlat",
                           stream_width=16, stream_height=12)
@@ -168,6 +170,7 @@ def test_read_retags_sensor_id_when_camera_changes_mid_stream():
     sensor.open()
     f1 = sensor.read()
     f2 = sensor.read()
+    assert f1 is not None and f2 is not None
     assert f1.sensor_id == "phone_main"
     assert f2.sensor_id == "phone_telephoto"
     assert sensor.active_camera == "telephoto"
@@ -199,7 +202,7 @@ def test_switch_camera_fails_when_phone_rejects():
     # Manual setup: open() would fail (switch_ok=False) so skip open here.
     sensor, _ = _build_sensor(_FakeClient())
     sensor.open()
-    sensor._client = client                   # swap in the rejecting client
+    sensor._client = client  # type: ignore[assignment]  # swap in rejecting client
     assert sensor.switch_camera("telephoto") is False
     sensor.close()
 

@@ -111,14 +111,15 @@ def test_read_yields_the_newest_frame_only():
     cap = _capture(_frame(1) + _frame(2) + _frame(3))
     time.sleep(0.3)                             # let the reader drain ffmpeg
     ok, frame = cap.read()
-    assert ok is True and int(frame[0, 0, 0]) == 3
+    assert ok is True and frame is not None
+    assert int(frame[0, 0, 0]) == 3
     cap.release()
 
 
 def test_decoded_frame_is_writable():
     cap = _capture(_frame(5))
     ok, frame = cap.read()
-    assert ok is True
+    assert ok is True and frame is not None
     frame[0, 0, 0] = 99                         # read-only buffer would raise
     assert int(frame[0, 0, 0]) == 99
     cap.release()

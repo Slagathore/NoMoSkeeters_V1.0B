@@ -204,7 +204,7 @@ def test_decoder_ffmpeg_builds_subprocess_capture(monkeypatch):
     FfmpegStreamCapture instead of cv2.VideoCapture."""
     import sensors.ffmpeg_capture as ffmod
 
-    built: list[str] = []
+    built: list = []
 
     class FakeFfmpeg:
         def __init__(self, camera_ip=None, **kw):

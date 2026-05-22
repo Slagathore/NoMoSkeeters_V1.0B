@@ -36,6 +36,7 @@ def test_dry_calibration_reloads_into_working_mapper(tmp_path):
     transport = DryRunTransport()
     run = run_dry_calibration(transport, pattern="grid",
                               sensor_id="gopro", out_dir=tmp_path)
+    assert run.json_path is not None
     mapper = CoordinateMapper.load(run.json_path)
     # Mapper recovered the synthetic camera's truth homography closely.
     g = mapper.norm_to_galvo(0.5, 0.5)

@@ -72,7 +72,7 @@ def test_live_calibration_fits_and_saves(tmp_path):
     run = run_live_calibration(cube, camera, pattern="grid",
                                sensor_id="gopro", out_dir=tmp_path,
                                dwell_samples=1, hold_s=0.05, settle_s=0.0)
-    assert run.json_path.exists()
+    assert run.json_path is not None and run.json_path.exists()
     assert run.mapper.n_points == 25                 # full 5×5 grid detected
     # The fitted mapper recovers the bench's ground-truth homography well.
     assert run.mapper.residual_norm < 0.01

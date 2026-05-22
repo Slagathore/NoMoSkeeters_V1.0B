@@ -28,7 +28,7 @@ def test_none_on_blank_frame():
     det = LaserDotDetector()
     blank = np.full((240, 240, 3), 20, dtype=np.uint8)
     assert det.detect(blank) is None
-    assert det.detect(None) is None
+    assert det.detect(None) is None  # type: ignore[arg-type]
 
 
 def test_confidence_drops_with_multiple_blobs():
@@ -44,6 +44,7 @@ def test_picks_largest_blob():
     cv2.circle(img, (60, 60), 2, (255, 255, 255), -1)     # small
     cv2.circle(img, (180, 180), 9, (255, 255, 255), -1)   # large
     obs = det.detect(img)
+    assert obs is not None
     assert abs(obs.x_px - 180) <= 3 and abs(obs.y_px - 180) <= 3
 
 

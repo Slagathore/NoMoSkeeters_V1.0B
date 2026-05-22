@@ -112,7 +112,8 @@ def test_connect_handshake_populates_capabilities():
         caps = client.capabilities
         assert caps is not None
         assert caps.phone_model == "TestPhone"
-        assert caps.camera("telephoto").optical_zoom_factor == 3.0
+        tele = caps.camera("telephoto")
+        assert tele is not None and tele.optical_zoom_factor == 3.0
         assert client.is_connected is True
         assert any(m["type"] == "connect" for m in fake.received)
     finally:

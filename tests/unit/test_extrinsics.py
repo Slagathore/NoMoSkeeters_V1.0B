@@ -25,8 +25,10 @@ def test_kinect_galvo_calibration_carries_stream_and_pose(tmp_path):
     assert doc["stream"] == "rgb"
     assert doc["kinect_relative_pose"]["operator_note"] == "corner shelf"
 
+    assert run.json_path is not None
     reloaded = CoordinateMapper.load(run.json_path)
     assert reloaded.stream == "rgb"
+    assert reloaded.kinect_relative_pose is not None
     assert reloaded.kinect_relative_pose["approx_origin_xyz_m"] == [0.5, 1.2, 0.0]
 
 
