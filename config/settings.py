@@ -167,8 +167,11 @@ LATENCY_SOFTWARE_LAG_MS: float = 0.0   # populated by drag-line calibration
 # Phone-as-sensor (PHONE_SENSOR_BOOTSTRAP.md). Replaces the GoPro as default
 # targeting camera; speaks NoMoSkeeters Sensor Protocol v1 over TCP+UDP.
 PHONE_PROTOCOL_VERSION: int = 1
-PHONE_IP: str = "192.168.1.50"           # phone's reachable address (USB-NCM
-                                          # or wifi); override per session
+PHONE_IP: str = "192.168.1.158"          # phone's reachable address (USB-NCM
+                                          # or wifi); override per session. This
+                                          # is a DHCP lease — if the probe can't
+                                          # reach it, re-check the app's top line
+                                          # or pin a DHCP reservation.
 PHONE_CMD_PORT: int = 45470              # TCP — commands + events + heartbeat
 PHONE_FRAME_PORT: int = 45471            # UDP — frame packets
 PHONE_BIND_IP: str = "0.0.0.0"           # PC's local bind for the UDP frame
