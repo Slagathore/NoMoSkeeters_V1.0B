@@ -152,10 +152,13 @@ class DetectionClassifier:
     def _classify_ml(self, features: dict[str, float]) -> tuple[str, float]:
         """Score with the loaded model. Returns its label + class probability."""
         vec = self.feature_vector(features).reshape(1, -1)
-        label = str(self._model.predict(vec)[0])
+        model = self._model
+        if model is None:                       # never reached in ML mode; guards the type
+            return ("false_positive", 0.0)
+        label = str(model.predict(vec)[0])
         conf = 0.5
-        if hasattr(self._model, "predict_proba"):
-            conf = float(np.max(self._model.predict_proba(vec)[0]))
+        if hasattr(model, "predict_proba"):
+            conf = float(np.max(model.predict_proba(vec)[0]))
         return (label, conf)
 
     # ── Model loading ────────────────────────────────────────────────────

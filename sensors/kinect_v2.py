@@ -14,7 +14,7 @@ width/height bug fix).
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -23,11 +23,16 @@ from sensors.base import Sensor, SensorFrame, SensorRole
 
 _log = logging.getLogger(__name__)
 
+# The pykinect2 binding has no type stubs and is absent on dev machines, so the
+# names are declared Any and rebound by the optional import — attribute access
+# (PyKinectV2.FrameSourceTypes_*, runtime methods) then type-checks cleanly
+# whether or not the SDK is installed.
+PyKinectRuntime: Any = None
+PyKinectV2: Any = None
 try:
-    from pykinect2 import PyKinectRuntime, PyKinectV2
+    from pykinect2 import PyKinectRuntime, PyKinectV2  # type: ignore[no-redef]
     _HAS_PYKINECT = True
 except Exception:                                     # pragma: no cover
-    PyKinectRuntime = PyKinectV2 = None
     _HAS_PYKINECT = False
 
 # Nominal Kinect v2 depth-camera intrinsics (512×424). These are the standard
@@ -153,6 +158,7 @@ class KinectV2Sensor(Sensor):
         # depth camera can update without a new colour frame).
         ref = (frame.rgb if frame.rgb is not None else
                frame.depth if frame.depth is not None else frame.ir)
+        assert ref is not None        # guaranteed: the all-None case returned above
         frame.height, frame.width = ref.shape[:2]
         self._width, self._height = frame.width, frame.height
         frame.timestamp_uncertainty_ms = self._ts_uncertainty

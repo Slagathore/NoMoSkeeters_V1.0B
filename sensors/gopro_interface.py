@@ -87,7 +87,7 @@ class GoProInterface:
                  *,
                  http_get: Optional[Callable[[str, float], bool]] = None,
                  http_get_json: Optional[Callable[[str, float], Optional[Any]]] = None,
-                 socket_factory: Optional[Callable[[], object]] = None):
+                 socket_factory: Optional[Callable[[], Any]] = None):
         self._ip = ip
         self._http_port = http_port
         self._stream_port = stream_port
@@ -101,7 +101,7 @@ class GoProInterface:
         self._http_get_json = http_get_json or _default_http_get_json
         self._socket_factory = socket_factory or (
             lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
-        self._ka_sock: Optional[object] = None
+        self._ka_sock: Optional[Any] = None
 
     @property
     def camera_ip(self) -> str:
@@ -174,11 +174,13 @@ class GoProInterface:
         if self._mode == "webcam":
             return self._http_get(self._url("/gopro/camera/keep_alive"),
                                   self._timeout)
-        if self._ka_sock is None:
-            self._ka_sock = self._socket_factory()
+        sock = self._ka_sock
+        if sock is None:
+            sock = self._socket_factory()
+            self._ka_sock = sock
         try:
-            self._ka_sock.sendto(_KEEPALIVE_PACKET,
-                                  (self._ip, self._stream_port))
+            sock.sendto(_KEEPALIVE_PACKET,
+                        (self._ip, self._stream_port))
             return True
         except OSError as exc:
             _log.error("gopro: keep-alive sendto failed: %s", exc)

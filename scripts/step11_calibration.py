@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -65,8 +66,8 @@ _FOV_CODES = {"default": None, "wide": 0, "linear": 4, "superview": 3}
 
 
 def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
-                 fov: object, record: object, phone_camera: str,
-                 phone_ip: object):
+                 fov: Optional[int], record: Optional[str], phone_camera: str,
+                 phone_ip: Optional[str]):
     if kind == "gopro":
         # HTTP control over the camera's IP (USB-tethered = .51).
         cam = GoProSensor(
@@ -83,10 +84,10 @@ def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
         # profile is stored separately (§3.4 Approach B).
         from phone_sensor.client import PhoneSensorClient
         from sensors.phone import PhoneSensor
-        client_kwargs = {"host": phone_ip} if phone_ip else {}
-        cam = PhoneSensor(
-            client=PhoneSensorClient(**client_kwargs),
-            active_camera=phone_camera, record_path=record)
+        client = (PhoneSensorClient(host=phone_ip) if phone_ip
+                  else PhoneSensorClient())
+        cam = PhoneSensor(client=client, active_camera=phone_camera,
+                          record_path=record)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -198,14 +199,16 @@ def main(argv=None) -> int:
     print(f"camera: {camera.sensor_id} opened")
 
     # Optional live camera-view window for the duration of the sweep.
-    on_frame = None
+    on_frame: Optional[Callable[[Any], None]] = None
     cv2mod = None
     if args.view:
         import cv2 as cv2mod          # noqa: F401 — only needed for --view
 
-        def on_frame(rgb):
+        def _show_frame(rgb):
             cv2mod.imshow("calibration - camera view", rgb)
             cv2mod.waitKey(1)
+
+        on_frame = _show_frame
 
     if not _confirm(f"Run a '{args.pattern}' calibration sweep now?"):
         camera.close()
@@ -242,12 +245,16 @@ def main(argv=None) -> int:
                   "feed was still captured — review it to see what happened.")
             return rc                    # finally still runs: laser off, etc.
         mapper = run.mapper
+        json_path = run.json_path
+        if json_path is None:
+            print("FAIL: calibration run produced no output path")
+            return rc
         print(f"\nfit: {mapper.n_points} points, "
               f"residual_norm={mapper.residual_norm:.4f}, "
               f"residual_galvo={mapper.residual_galvo:.1f}")
 
         if args.single:
-            mapper.save(run.json_path)
+            mapper.save(json_path)
             print(f"\nsingle cycle done — calibration saved to {run.json_path}")
             print("(multi-depth validation skipped: --single)")
             rc = 0
@@ -274,7 +281,7 @@ def main(argv=None) -> int:
 
             result = validate_multi_depth(mapper, all_targets)
             mapper.validation = result
-            mapper.save(run.json_path)
+            mapper.save(json_path)
 
             print("\n" + "-" * 60)
             for depth_m, resid in sorted(

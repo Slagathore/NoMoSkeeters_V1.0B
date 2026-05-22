@@ -23,6 +23,9 @@ from laser.protocol import parse_full_info              # noqa: E402
 def main() -> int:
     golden_path = ROOT / "tests" / "fixtures" / "golden_full_info_64b.bin"
     golden = parse_full_info(golden_path.read_bytes())
+    if golden is None:
+        print("FAIL: golden fixture did not parse")
+        return 1
 
     cube = LaserCubeInterface(ip="169.254.40.83", src_ip="auto")
 

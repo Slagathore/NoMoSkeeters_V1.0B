@@ -64,6 +64,7 @@ if frame_count == 0:
           "(try ffmpeg -i udp://0.0.0.0:8554 -t 5 -f null - to verify)")
     raise SystemExit(2)
 
+assert first_frame_at is not None        # frame_count > 0 implies it was set
 total_elapsed = time.monotonic() - first_frame_at
 print(f"\nPASS: {frame_count} frames in {total_elapsed:.1f}s "
       f"= {frame_count/total_elapsed:.1f} fps")

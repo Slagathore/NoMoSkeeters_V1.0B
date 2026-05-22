@@ -26,7 +26,7 @@ import socket
 import subprocess
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
 
@@ -52,7 +52,7 @@ def local_ip_for(camera_ip: str) -> str:
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None,
                                        socket.AF_INET):
-            ip = info[4][0]
+            ip = str(info[4][0])
             if ip.startswith(prefix):
                 return ip
     except socket.gaierror:
@@ -118,8 +118,8 @@ class FfmpegStreamCapture:
                  ffmpeg_path: str = "ffmpeg",
                  hwaccel: Optional[str] = "cuda",
                  record_path: Optional[str] = None,
-                 popen: Optional[Callable[..., object]] = None,
-                 sock: Optional[object] = None):
+                 popen: Optional[Callable[..., Any]] = None,
+                 sock: Optional[Any] = None):
         self._port = port
         self._width = width
         self._height = height
@@ -131,9 +131,9 @@ class FfmpegStreamCapture:
         # If the ffmpeg build lacks it, _start falls back to software decode.
         self._hwaccel = hwaccel
         self._record_path = record_path
-        self._record_fh: Optional[object] = None
+        self._record_fh: Optional[Any] = None
         self._popen = popen or subprocess.Popen
-        self._proc: Optional[object] = None
+        self._proc: Optional[Any] = None
         self._sock = sock
         self._stop = threading.Event()
         self._frames: "queue.Queue" = queue.Queue(maxsize=_FRAME_QUEUE_MAX)
@@ -186,7 +186,7 @@ class FfmpegStreamCapture:
         _log.info("ffmpeg webcam decoder up: udp://%s:%d -> %dx%d",
                   self._bind_ip, self._port, self._width, self._height)
 
-    def _spawn_ffmpeg(self, hwaccel: Optional[str]) -> Optional[object]:
+    def _spawn_ffmpeg(self, hwaccel: Optional[str]) -> Optional[Any]:
         cmd = build_ffmpeg_command(self._ffmpeg_path, hwaccel)
         try:
             return self._popen(cmd, stdin=subprocess.PIPE,

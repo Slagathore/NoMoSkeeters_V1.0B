@@ -15,7 +15,7 @@ import socket
 import struct
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from laser.protocol import (
     LC_CMD_GET_FULL_INFO,
@@ -54,7 +54,7 @@ def _autodetect_src_ip(cube_ip: str) -> str:
     try:
         host = socket.gethostname()
         for info in socket.getaddrinfo(host, None, socket.AF_INET):
-            candidates.add(info[4][0])
+            candidates.add(str(info[4][0]))
         candidates.update(socket.gethostbyname_ex(host)[2])
     except OSError:
         pass
@@ -91,8 +91,10 @@ class LaserCubeInterface(LaserCubeTransport):
         self.alive_port = alive_port
         self.reply_timeout_s = reply_timeout_s
 
-        self._cmd_sock: Optional[socket.socket] = None
-        self._data_sock: Optional[socket.socket] = None
+        # Socket-like handles: real UDP sockets in production, duck-typed fakes
+        # in tests — typed Any so both assign cleanly.
+        self._cmd_sock: Optional[Any] = None
+        self._data_sock: Optional[Any] = None
 
         # _lock guards socket lifecycle + shared mutable state (sockets,
         # _connected, _msg_num, _buffer). RLock so connect()/disconnect()

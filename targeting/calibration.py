@@ -17,6 +17,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from numpy.typing import ArrayLike
 
 from config import settings
 from laser.types import COORD_MAX
@@ -28,8 +29,11 @@ CALIBRATION_SCHEMA_VERSION = 2
 
 # ── Homography helpers ───────────────────────────────────────────────────
 
-def apply_homography(H: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    """Apply a 3×3 homography to an (N,2) array of points; returns (N,2)."""
+def apply_homography(H: np.ndarray, pts: ArrayLike) -> np.ndarray:
+    """Apply a 3×3 homography to an (N,2) array of points; returns (N,2).
+
+    `pts` is anything array-like — a list of (x,y) tuples or an (N,2) ndarray;
+    it is coerced with np.asarray below."""
     pts = np.asarray(pts, dtype=float).reshape(-1, 2)
     homog = np.hstack([pts, np.ones((len(pts), 1))])
     out = (H @ homog.T).T

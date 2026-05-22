@@ -87,10 +87,10 @@ class SensorManager:
             return False
         # Route any sensor status (e.g. GoPro /camera/state) onto the bus.
         # Must happen before open() — open() starts the status-poll thread.
-        if hasattr(sensor, "set_status_sink"):
+        sink = getattr(sensor, "set_status_sink", None)
+        if sink is not None:
             sid = sensor.sensor_id
-            sensor.set_status_sink(
-                lambda ev, sid=sid: self._dispatch_status(sid, ev))
+            sink(lambda ev, sid=sid: self._dispatch_status(sid, ev))
         if not sensor.open():
             _log.error("sensor %s failed to open", sensor.sensor_id)
             return False

@@ -46,7 +46,8 @@ def _norm_to_galvo(v: float) -> float:
 
 def _scale_color(rgb: tuple[int, int, int], power_pct: float) -> tuple[int, int, int]:
     scale = max(0.0, min(100.0, power_pct)) / 100.0
-    return tuple(max(0, min(_COORD_MAX, int(round(c * scale)))) for c in rgb)
+    scaled = [max(0, min(_COORD_MAX, int(round(c * scale)))) for c in rgb]
+    return (scaled[0], scaled[1], scaled[2])
 
 
 def _apply_power_scale(cfg: ConeCollapseConfig,

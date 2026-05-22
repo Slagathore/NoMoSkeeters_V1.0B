@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from config import settings
 from events.schemas import (PhoneCameraChangedEvent, PhoneFocusEvent,
@@ -55,7 +55,7 @@ class PhoneSensor(Sensor):
                  stream_height: int = settings.PHONE_DEFAULT_STREAM_HEIGHT,
                  stream_fps: int = settings.PHONE_DEFAULT_STREAM_FPS,
                  timestamp_uncertainty_ms: float = 60.0,
-                 decoder_factory: Optional[Callable[..., object]] = None,
+                 decoder_factory: Optional[Callable[..., Any]] = None,
                  record_path: Optional[str] = None,
                  on_status: Optional[StatusCallback] = None):
         self._client = client or PhoneSensorClient()
@@ -69,7 +69,7 @@ class PhoneSensor(Sensor):
         self._decoder_factory = decoder_factory or self._default_decoder
         self._record_path = record_path
         self._on_status = on_status
-        self._cap: Optional[object] = None
+        self._cap: Optional[Any] = None
         self._width = 0
         self._height = 0
         self._sensor_id = f"phone_{self._active_camera}"

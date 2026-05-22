@@ -390,7 +390,7 @@ def main() -> int:
         "white": (rgb_value, rgb_value, rgb_value),
     }
     r, g, b = color_map[args.color]
-    test_point = (GALVO_CENTER, GALVO_CENTER, r, g, b)
+    test_point: tuple[int, int, int, int, int] = (GALVO_CENTER, GALVO_CENTER, r, g, b)
     print(f"\nTest point: galvo=({GALVO_CENTER:#x}, {GALVO_CENTER:#x}) "
           f"rgb=({r:#x}, {g:#x}, {b:#x})")
 
@@ -462,7 +462,7 @@ def main() -> int:
         # 140 identical points per UDP packet, paced to match the cube's
         # consumption rate (~30k pps default → ~140 samples scan out per 4.7ms).
         # Sleeping for that interval keeps the ringbuffer roughly half-full.
-        chunk_points = [test_point] * MAX_SAMPLES_PER_PACKET
+        chunk_points: list = [test_point] * MAX_SAMPLES_PER_PACKET
         packet_interval_s = MAX_SAMPLES_PER_PACKET / DAC_RATE_DEFAULT
         deadline = time.monotonic() + args.duration_s
         msg_num = 0

@@ -477,7 +477,7 @@ def hexdump(data: bytes, width: int = 16, max_lines: int = 8) -> str:
 
 
 def print_probe_line(r: ProbeResult, verbose: bool) -> None:
-    if r.responded:
+    if r.responded and r.response is not None and r.response_addr is not None:
         marker = "[OK]  "
         detail = f"{len(r.response)}B in {r.elapsed_ms:.1f}ms from {r.response_addr[0]}:{r.response_addr[1]}"
     else:
@@ -486,7 +486,7 @@ def print_probe_line(r: ProbeResult, verbose: bool) -> None:
 
     print(f"  {marker} {r.name:<42} -> {detail}")
 
-    if verbose and r.responded:
+    if verbose and r.responded and r.response is not None:
         print(hexdump(r.response))
         if r.parsed:
             for k, v in r.parsed.items():

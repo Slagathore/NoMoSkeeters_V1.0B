@@ -438,8 +438,9 @@ def simulate_to_csv(output_path: str,
     if config is None:
         config = ConeCollapseConfig()
     if mosquito_trajectory is None:
-        def mosquito_trajectory(t_s):           # stationary, galvo center
+        def _stationary_traj(t_s):              # stationary, galvo center
             return TrackerSnapshot(2048, 2048, 0, 0, 1.0)
+        mosquito_trajectory = _stationary_traj
 
     pat = ConeCollapsePattern(config, mosquito_trajectory(0.0))
     chunk_dt = config.chunk_size / config.dac_rate

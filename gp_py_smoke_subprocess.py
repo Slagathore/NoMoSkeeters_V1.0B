@@ -58,7 +58,7 @@ def main(argv=None) -> int:
         http_get(args.ip, "/gopro/webcam/stop")
         http_get(args.ip, "/gopro/webcam/exit")
 
-    if not frames:
+    if not frames or first is None:
         print("FAIL: zero frames decoded")
         return 2
     elapsed = time.monotonic() - first

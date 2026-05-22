@@ -50,7 +50,9 @@ class DotRepeat(ShotPattern):
 
     pattern_id = "dot_repeat"
 
-    def generate(self, x, y, dwell_ms, dac_rate, power_pct):
+    def generate(self, target_x_galvo, target_y_galvo, dwell_ms, dac_rate,
+                 power_pct):
+        x, y = target_x_galvo, target_y_galvo
         n = _sample_count(dwell_ms, dac_rate)
         rgb = _rgb_level(power_pct)
         return [LaserPoint(x=x, y=y, r=rgb, g=rgb, b=rgb) for _ in range(n)]
@@ -65,7 +67,9 @@ class MicroCircle(ShotPattern):
     def __init__(self, radius_galvo: int = 30):
         self.radius = radius_galvo
 
-    def generate(self, x, y, dwell_ms, dac_rate, power_pct):
+    def generate(self, target_x_galvo, target_y_galvo, dwell_ms, dac_rate,
+                 power_pct):
+        x, y = target_x_galvo, target_y_galvo
         n = _sample_count(dwell_ms, dac_rate)
         rgb = _rgb_level(power_pct)
         return [
@@ -87,7 +91,9 @@ class FigureEight(ShotPattern):
     def __init__(self, scale_galvo: int = 40):
         self.scale = scale_galvo
 
-    def generate(self, x, y, dwell_ms, dac_rate, power_pct):
+    def generate(self, target_x_galvo, target_y_galvo, dwell_ms, dac_rate,
+                 power_pct):
+        x, y = target_x_galvo, target_y_galvo
         n = _sample_count(dwell_ms, dac_rate)
         rgb = _rgb_level(power_pct)
         out = []

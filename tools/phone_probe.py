@@ -20,6 +20,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -92,13 +93,15 @@ def main(argv=None) -> int:
           f"UDP frame :{settings.PHONE_FRAME_PORT}")
     print("=" * 60)
 
-    on_view = None
+    on_view: Optional[Callable[[Any], None]] = None
     if args.view:
         import cv2
 
-        def on_view(rgb):
+        def _show_view(rgb):
             cv2.imshow("phone preview", cv2.resize(rgb, (960, 540)))
             cv2.waitKey(1)
+
+        on_view = _show_view
 
     client = PhoneSensorClient(host=args.phone_ip)
     sensor = PhoneSensor(client=client, active_camera=args.phone_camera,

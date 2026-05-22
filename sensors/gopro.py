@@ -15,7 +15,7 @@ import logging
 import os
 import threading
 import time
-from typing import Callable, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
 import cv2
 
@@ -61,7 +61,7 @@ class GoProSensor(Sensor):
                  role: SensorRole = SensorRole.TARGETING,
                  control: Optional[GoProControl] = None,
                  timestamp_uncertainty_ms: float = 20.0,
-                 capture_factory: Optional[Callable[[], object]] = None,
+                 capture_factory: Optional[Callable[[], Any]] = None,
                  decoder: str = "opencv",
                  camera_ip: Optional[str] = None,
                  record_path: Optional[str] = None,
@@ -77,13 +77,13 @@ class GoProSensor(Sensor):
         # camera IP from the injected control if it exposes one.
         if camera_ip is None:
             camera_ip = getattr(control, "camera_ip", "172.27.109.51")
-        self._camera_ip = camera_ip
+        self._camera_ip: str = camera_ip or "172.27.109.51"
         self._record_path = record_path
         self._capture_factory = capture_factory or self._default_capture
         self._capture_options = capture_options
         self._on_status = on_status
         self._status_interval_s = status_poll_interval_s
-        self._cap: Optional[object] = None
+        self._cap: Optional[Any] = None
         self._width = 0
         self._height = 0
         self._keepalive_stop = threading.Event()
@@ -209,8 +209,11 @@ class GoProSensor(Sensor):
 
     def _keepalive_loop(self) -> None:
         while not self._keepalive_stop.wait(_KEEPALIVE_INTERVAL_S):
+            control = self._control
+            if control is None:
+                continue
             try:
-                self._control.keep_alive()
+                control.keep_alive()
             except Exception:
                 # Never let the keep-alive thread die on a transient error.
                 _log.exception("gopro: keep_alive() raised; will retry")
@@ -235,8 +238,11 @@ class GoProSensor(Sensor):
 
     def _status_loop(self) -> None:
         while not self._status_stop.wait(self._status_interval_s):
+            control = self._control
+            if control is None:
+                continue
             try:
-                event = self._control.get_state()
+                event = control.get_state()
             except Exception:
                 _log.exception("gopro: get_state() raised; will retry")
                 event = None
@@ -246,7 +252,10 @@ class GoProSensor(Sensor):
                     timestamp=time.monotonic(), reachable=False,
                     battery_percent=0, system_hot=False, system_busy=False,
                     preview_stream_active=False, thermal_throttle=False)
+            sink = self._on_status
+            if sink is None:
+                continue
             try:
-                self._on_status(event)
+                sink(event)
             except Exception:
                 _log.exception("gopro: on_status callback raised; suppressing")

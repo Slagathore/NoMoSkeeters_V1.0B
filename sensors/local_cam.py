@@ -8,7 +8,7 @@ Reference: BOOTSTRAP.md §5.4.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import cv2
 
@@ -25,13 +25,13 @@ class LocalCamSensor(Sensor):
                  index: int = 0,
                  role: SensorRole = SensorRole.FALLBACK,
                  timestamp_uncertainty_ms: float = 5.0,
-                 capture_factory: Optional[Callable[[], object]] = None):
+                 capture_factory: Optional[Callable[[], Any]] = None):
         self._index = index
         self._role = role
         self._ts_uncertainty = timestamp_uncertainty_ms
         self._capture_factory = capture_factory or (
             lambda: cv2.VideoCapture(index))
-        self._cap: Optional[object] = None
+        self._cap: Optional[Any] = None
         self._width = 0
         self._height = 0
 
