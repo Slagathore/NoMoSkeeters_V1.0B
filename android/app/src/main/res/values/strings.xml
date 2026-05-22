@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NoMoSkeeters Sensor</string>
+    <string name="btn_start">Start</string>
+    <string name="btn_stop">Stop</string>
+    <string name="status_idle">Idle — press Start to listen</string>
+    <string name="status_listening">Listening on :%1$d — waiting for PC</string>
+    <string name="status_connected">PC connected: %1$s</string>
+    <string name="ip_line">phone %1$s   cmd :%2$d   frame :%3$d</string>
+    <string name="stream_line">stream: %1$s  %2$s  %3$d×%4$d @%5$d</string>
+    <string name="stream_off">stream: off  (camera %1$s)</string>
+    <string name="health_line">thermal: %1$s   battery: %2$d%%</string>
+</resources>

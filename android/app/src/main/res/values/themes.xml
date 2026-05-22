@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material3 DayNight, no action bar (the layout is the whole screen). -->
+    <style name="Theme.NoMoSkeetersSensor" parent="Theme.Material3.DayNight.NoActionBar" />
+</resources>
