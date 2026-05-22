@@ -7,7 +7,8 @@ import time
 
 import numpy as np
 
-from phone_sensor.frame_decoder import PhoneFrameDecoder, _FrameReassembler
+from phone_sensor.frame_decoder import (PhoneFrameDecoder, _FrameReassembler,
+                                        _build_ffmpeg_command)
 from phone_sensor.protocol import (MAX_CHUNK_PAYLOAD, FramePacket,
                                    pack_frame_packet)
 
@@ -167,6 +168,26 @@ def test_fragmented_nv21_frame_reassembled_and_decoded():
         assert frame.shape == (h, w, 3)
     finally:
         dec.release()
+
+
+# ── ffmpeg command ───────────────────────────────────────────────────────
+
+def test_ffmpeg_command_omits_pipe_breaking_flags():
+    # On the phone's frame-by-frame pipe feed, two flags are fatal (verified by
+    # flag-bisecting a captured stream that decodes fine from a file):
+    #   -avioflags direct  -> unbuffered reads split NALs, SPS mis-parsed
+    #   -fflags nobuffer    -> demuxer can't delimit AUs, output stalls
+    cmd = _build_ffmpeg_command("ffmpeg", "h264", None)
+    assert "-avioflags" not in cmd and "direct" not in cmd
+    assert "-fflags" not in cmd and "nobuffer" not in cmd
+    # The safe latency win must remain.
+    assert "low_delay" in cmd
+    assert cmd[-1] == "-" and "pipe:0" in cmd
+
+
+def test_ffmpeg_command_prepends_hwaccel():
+    cmd = _build_ffmpeg_command("ffmpeg", "h264", "cuda")
+    assert cmd[1:3] == ["-hwaccel", "cuda"]
 
 
 # ── Reassembler unit ─────────────────────────────────────────────────────

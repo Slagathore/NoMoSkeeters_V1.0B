@@ -45,16 +45,30 @@ _CODEC_FORMATS = {"h264", "avc", "h265", "hevc"}
 
 def _build_ffmpeg_command(ffmpeg_path: str, codec: str,
                           hwaccel: Optional[str]) -> list:
-    """Mirror the GoPro ffmpeg decode flags — low-latency, no buffering."""
+    """Low-latency H.264 decode flags for the PHONE's frame-by-frame pipe feed.
+
+    Two flags from the GoPro's flag set are deliberately omitted — both are
+    fatal when ffmpeg is fed one frame per write over a pipe (verified by
+    bisecting the flags against a captured phone stream that decodes perfectly
+    from a file):
+
+      * NO `-avioflags direct` — unbuffered pipe reads split NAL units mid-unit,
+        so the parser mis-reads the SPS ("sps_id N out of range" →
+        "non-existing PPS 0 referenced" → "no frame!") and decodes nothing.
+      * NO `-fflags nobuffer` — it stops the demuxer accumulating enough to
+        delimit access units in a pipe stream with no AUDs, so output stalls
+        (0 frames during feed; a couple trickle out only at EOF).
+
+    `-flags low_delay` (the actual latency win — no decoder reorder buffer) is
+    kept. The GoPro path reads from a socket URL where both omitted flags are
+    harmless; this pipe-fed path is different."""
     cmd = [ffmpeg_path]
     if hwaccel:
         cmd += ["-hwaccel", hwaccel]
     cmd += [
         "-probesize", "100000",
         "-analyzeduration", "0",
-        "-fflags", "nobuffer",
         "-flags", "low_delay",
-        "-avioflags", "direct",
         "-max_delay", "0",
         "-f", codec,
         "-i", "pipe:0",
