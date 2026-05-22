@@ -1,12 +1,9 @@
-// Root build file. Plugin versions are declared here (apply false) and applied
-// in the :app module. Toolchain: AGP 8.13.0 / Kotlin 2.0.20 / Gradle 8.13 / JDK 17.
-// AGP 8.13 requires Gradle 8.13+ — the wrapper is set to match (a too-new AGP on
-// a too-old Gradle is what produced the ":app:testApi ... locked upon creation"
-// error before). If that error returns after this change it's almost certainly
-// stale Gradle state from the version flip-flopping: File > Invalidate Caches /
-// Restart and delete android/.gradle, then re-sync. Known-good fallback if it
-// truly won't take: AGP 8.7.2 / Gradle 8.9.
+// Root build file. Toolchain: AGP 9.2.1 / Gradle 9.4.1 / JDK 17, settled by the
+// Android Studio AGP Upgrade Assistant and verified building + running on-device
+// (2026). AGP 9 has built-in Kotlin (android.builtInKotlin=true in
+// gradle.properties), so there's no separate Kotlin plugin. Keep AGP and Gradle
+// a matched pair — mismatching them is what produced the earlier
+// ":app:testApi ... locked upon creation" configuration error.
 plugins {
-    id("com.android.application") version "8.13.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+    id("com.android.application") version "9.2.1" apply false
 }
