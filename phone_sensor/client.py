@@ -18,7 +18,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from config import settings
 from phone_sensor.protocol import (PROTOCOL_VERSION, PhoneCapabilities,
@@ -26,8 +26,10 @@ from phone_sensor.protocol import (PROTOCOL_VERSION, PhoneCapabilities,
 
 _log = logging.getLogger(__name__)
 
+# The socket is duck-typed: real sockets in production, fakes in tests, so the
+# socket-like value is `Any` rather than a concrete type.
 EventSink = Callable[[dict], None]
-ConnectFn = Callable[[str, int, float], object]
+ConnectFn = Callable[[str, int, float], Any]
 
 
 def _default_connect(host: str, port: int, timeout_s: float) -> socket.socket:
@@ -58,7 +60,7 @@ class PhoneSensorClient:
         self._connect_fn = connect_fn or _default_connect
         self._on_event = on_event
 
-        self._sock: Optional[object] = None
+        self._sock: Optional[Any] = None
         self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._reader_thread: Optional[threading.Thread] = None

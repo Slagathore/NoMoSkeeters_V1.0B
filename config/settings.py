@@ -13,6 +13,7 @@ Sections mirror BOOTSTRAP.md §§5-15 + BOOTSTRAP_AMENDMENTS §§5-9.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 
 # ── Paths ────────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import socket
 import subprocess
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -85,8 +85,8 @@ class PhoneFrameDecoder:
                  ffmpeg_path: str = "ffmpeg",
                  hwaccel: Optional[str] = settings.PHONE_FFMPEG_HWACCEL,
                  record_path: Optional[str] = None,
-                 popen: Optional[Callable[..., object]] = None,
-                 sock: Optional[object] = None):
+                 popen: Optional[Callable[..., Any]] = None,
+                 sock: Optional[Any] = None):
         self._width = width
         self._height = height
         self._codec = codec.lower()
@@ -96,10 +96,10 @@ class PhoneFrameDecoder:
         self._ffmpeg_path = ffmpeg_path
         self._hwaccel = hwaccel
         self._record_path = record_path
-        self._record_fh: Optional[object] = None
+        self._record_fh: Optional[Any] = None
         self._popen = popen or subprocess.Popen
         self._sock = sock
-        self._proc: Optional[object] = None
+        self._proc: Optional[Any] = None
         self._stop = threading.Event()
         self._frames: "queue.Queue" = queue.Queue(
             maxsize=settings.PHONE_FRAME_QUEUE_MAX)
