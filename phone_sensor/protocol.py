@@ -6,10 +6,11 @@ Two channels between PC and phone:
     per message. Bidirectional: the PC sends commands; the phone replies and
     pushes unsolicited status events. Cheap to parse, easy to debug with
     `nc`, and the bandwidth is tiny.
-  - **UDP, frame channel** (PHONE_FRAME_PORT). One packet per video frame
-    (one frame fits in one MTU for raw YUV at modest resolutions; for H.264
-    keyframes a packet can be ~10s of KB). Compact binary header so the per-
-    frame overhead is single-digit bytes.
+  - **UDP, frame channel** (PHONE_FRAME_PORT). One video frame per *chunk
+    sequence* — a frame is split into one or more datagrams (chunk_index /
+    chunk_count) so an H.264 IDR or a raw-YUV frame larger than the UDP ceiling
+    still gets through; the PC reassembles by frame_id. Compact binary header
+    so the per-chunk overhead is single-digit bytes.
 
 The protocol is intentionally line-oriented JSON rather than protobuf — the
 phone-side spec mentions both; JSON is what this PC implementation expects.
@@ -144,28 +145,50 @@ def parse_message(line: bytes) -> dict:
 
 # ── Frame channel — compact binary header ───────────────────────────────
 #
+# A single video frame is split into one or more *chunks*, each its own UDP
+# datagram, so a frame larger than the IPv4 UDP payload ceiling (an H.264 IDR,
+# or any raw-YUV frame) still gets through. All chunks of a frame share its
+# `frame_id`; the PC reassembles them in `chunk_index` order (see
+# `phone_sensor.frame_decoder._FrameReassembler`). An unfragmented frame is
+# just `chunk_count == 1`.
+#
 # Header (little-endian):
 #
-#   uint32 magic       = b"NMS1"  — sanity / version-id
-#   uint64 frame_id    — monotonic, lets the PC detect drops
-#   uint64 capture_ts  — microseconds, phone monotonic clock
-#   uint16 cam_id_len  — bytes of camera_id string that follow
-#   uint16 fmt_len     — bytes of format string that follow (e.g. "nv21")
+#   uint32 magic        = b"NMS2"  — sanity / version-id
+#   uint64 frame_id     — monotonic; identical across a frame's chunks
+#   uint64 capture_ts   — microseconds, phone monotonic clock
+#   uint16 cam_id_len   — bytes of camera_id string that follow
+#   uint16 fmt_len      — bytes of format string that follow (e.g. "nv21")
 #   uint16 width
 #   uint16 height
-#   uint32 payload_len — bytes of pixel/encoded payload that follow
-#   <camera_id bytes>  — utf-8
-#   <format bytes>     — utf-8
-#   <payload bytes>    — raw YUV, H.264 NAL, etc. (see StreamMode)
+#   uint32 payload_len  — bytes of payload in THIS chunk that follow
+#   uint16 chunk_index  — 0-based position of this chunk within the frame
+#   uint16 chunk_count  — total chunks for the frame (>= 1)
+#   <camera_id bytes>   — utf-8 (repeated in every chunk)
+#   <format bytes>      — utf-8 (repeated in every chunk)
+#   <payload bytes>     — this chunk's slice of the frame
+#
+# `MAX_CHUNK_PAYLOAD` keeps each packed datagram (header + strings + chunk)
+# under the 65507-byte ceiling with room to spare; the phone splits on it.
 
-_FRAME_MAGIC = b"NMS1"
-_HEADER_FMT = "<4sQQHHHHI"
+_FRAME_MAGIC = b"NMS2"
+_HEADER_FMT = "<4sQQHHHHIHH"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
+
+#: 65535 − 8 (UDP) − 20 (IPv4) = 65507 datagram ceiling; leave headroom for the
+#: header and the (tiny) camera_id/format strings.
+MAX_UDP_PAYLOAD = 65507
+MAX_CHUNK_PAYLOAD = 60000
 
 
 @dataclass
 class FramePacket:
-    """One decoded frame packet off the UDP socket — before pixel decoding."""
+    """One frame packet off the UDP socket — before pixel decoding.
+
+    On the wire this is a single *chunk*; `chunk_index`/`chunk_count` describe
+    its place in the frame. After reassembly the decoder hands consumers a
+    `FramePacket` with the full payload and `chunk_index=0, chunk_count=1`.
+    """
     frame_id: int
     capture_ts_us: int
     camera_id: str
@@ -173,6 +196,8 @@ class FramePacket:
     width: int
     height: int
     payload: bytes
+    chunk_index: int = 0
+    chunk_count: int = 1
 
 
 def pack_frame_packet(p: FramePacket) -> bytes:
@@ -180,21 +205,32 @@ def pack_frame_packet(p: FramePacket) -> bytes:
     fmt = p.fmt.encode("utf-8")
     if len(cid) > 0xFFFF or len(fmt) > 0xFFFF:
         raise ValueError("camera_id or format too long for the header")
+    if not (1 <= p.chunk_count <= 0xFFFF):
+        raise ValueError(f"chunk_count out of range: {p.chunk_count}")
+    if not (0 <= p.chunk_index < p.chunk_count):
+        raise ValueError(
+            f"chunk_index {p.chunk_index} out of range for count {p.chunk_count}")
     return struct.pack(_HEADER_FMT, _FRAME_MAGIC,
                        p.frame_id, p.capture_ts_us,
                        len(cid), len(fmt), p.width, p.height,
-                       len(p.payload)) + cid + fmt + p.payload
+                       len(p.payload), p.chunk_index, p.chunk_count) \
+        + cid + fmt + p.payload
 
 
 def parse_frame_packet(buf: bytes) -> FramePacket:
-    """Parse one UDP datagram into a FramePacket. Raises ValueError on a bad
-    magic, short read, or length mismatch — caller drops the packet."""
+    """Parse one UDP datagram (one chunk) into a FramePacket. Raises ValueError
+    on a bad magic, short read, length mismatch, or out-of-range chunk fields —
+    caller drops the packet."""
     if len(buf) < _HEADER_SIZE:
         raise ValueError("frame packet shorter than header")
     (magic, frame_id, capture_ts_us, cid_len, fmt_len, width, height,
-     payload_len) = struct.unpack(_HEADER_FMT, buf[:_HEADER_SIZE])
+     payload_len, chunk_index, chunk_count) = struct.unpack(
+        _HEADER_FMT, buf[:_HEADER_SIZE])
     if magic != _FRAME_MAGIC:
         raise ValueError(f"bad frame magic {magic!r}")
+    if chunk_count < 1 or chunk_index >= chunk_count:
+        raise ValueError(
+            f"bad chunk fields: index {chunk_index} of count {chunk_count}")
     end_cid = _HEADER_SIZE + cid_len
     end_fmt = end_cid + fmt_len
     end_pay = end_fmt + payload_len
@@ -208,4 +244,5 @@ def parse_frame_packet(buf: bytes) -> FramePacket:
         fmt=buf[end_cid:end_fmt].decode("utf-8"),
         width=width, height=height,
         payload=bytes(buf[end_fmt:end_pay]),
+        chunk_index=chunk_index, chunk_count=chunk_count,
     )

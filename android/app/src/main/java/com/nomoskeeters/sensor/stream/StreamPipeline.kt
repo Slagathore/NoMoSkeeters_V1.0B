@@ -71,17 +71,37 @@ class StreamPipeline(private val streamer: FrameStreamer) {
         }
     }
 
+    /**
+     * Tag one frame and ship it. Frames larger than a single UDP datagram are
+     * split into [FramePacket.MAX_CHUNK_PAYLOAD]-byte chunks sharing one
+     * frameId; the PC reassembles them by frameId. A small frame is a single
+     * chunk (count 1) — same cost as before.
+     */
     private fun emit(payload: ByteArray, fmt: String, w: Int, h: Int, captureTsUs: Long) {
-        val packet = FramePacket.pack(
-            frameId = frameId.getAndIncrement(),
-            captureTsUs = captureTsUs,
-            cameraId = activeCameraRole,
-            fmt = fmt,
-            width = w,
-            height = h,
-            payload = payload,
-        )
-        streamer.send(packet)
+        val fid = frameId.getAndIncrement()
+        val chunkSize = FramePacket.MAX_CHUNK_PAYLOAD
+        val total = payload.size
+        val chunkCount = if (total <= chunkSize) 1 else (total + chunkSize - 1) / chunkSize
+        var index = 0
+        var offset = 0
+        while (index < chunkCount) {
+            val len = minOf(chunkSize, total - offset)
+            streamer.send(FramePacket.pack(
+                frameId = fid,
+                captureTsUs = captureTsUs,
+                cameraId = activeCameraRole,
+                fmt = fmt,
+                width = w,
+                height = h,
+                payload = payload,
+                payloadOffset = offset,
+                payloadLen = len,
+                chunkIndex = index,
+                chunkCount = chunkCount,
+            ))
+            offset += len
+            index++
+        }
     }
 
     fun setBitrate(bps: Int) {

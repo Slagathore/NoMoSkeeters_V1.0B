@@ -12,10 +12,11 @@ import android.view.Surface
  * Raw `YUV_420_888` capture → NV21 bytes, for the `raw_yuv` stream mode. The PC
  * decodes NV21 in-process with `cv2.cvtColor(..., COLOR_YUV2BGR_NV21)`.
  *
- * NOTE: a raw NV21 frame is `w*h*3/2` bytes — 1080p is ~3.1 MB, far over the
- * single-datagram UDP ceiling. Raw mode is therefore only usable at small
- * resolutions (≈256×170 or below); larger raw frames are dropped by the
- * streamer's size guard. h264 modes are the right choice for full resolution.
+ * NOTE: a raw NV21 frame is `w*h*3/2` bytes — 1080p is ~3.1 MB. The frame
+ * channel now fragments frames across datagrams (the PC reassembles by
+ * frame_id), so full-resolution raw is deliverable — but a 1080p frame is ~53
+ * chunks, and losing any one drops the whole frame, so raw mode is still best
+ * kept to modest resolutions. h264 modes remain the right choice at 1080p.
  */
 class RawYuvReader(
     private val width: Int,

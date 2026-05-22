@@ -19,7 +19,7 @@ not just the design draft in `PHONE_SENSOR_BOOTSTRAP.md`.
 |-------------------------------------------|--------------------------------------------|
 | `PhoneSensorClient` dials TCP `PHONE_IP:45470` | `net/CommandServer` — phone is the **server** on `:45470` |
 | Line-delimited JSON `{type,cmd_id,…}` cmds | `protocol/CommandRouter` parses, replies `{"type":"<cmd>_reply","cmd_id":n,"ok":…}` |
-| `PhoneFrameDecoder` binds UDP `:45471`, parses `<4sQQHHHHI` header | `protocol/FramePacket` packs identical bytes; `net/FrameStreamer` sends to the PC |
+| `PhoneFrameDecoder` binds UDP `:45471`, parses `<4sQQHHHHIHH` chunks + reassembles by `frame_id` | `protocol/FramePacket` packs identical bytes; `stream/StreamPipeline` chunks; `net/FrameStreamer` sends to the PC |
 | Reads decoded `w*h*3` BGR for h264 / per-packet dims for raw | `encoder/H264Encoder` (Annex-B) / `encoder/RawYuvReader` (NV21) |
 | Capabilities manifest on `connect`        | `camera/CameraEnumerator` builds it from Camera2 characteristics |
 | `event:camera_changed / af_settled / thermal_warning / battery_low` | `SensorEngine` emits them (no `cmd_id`, so the PC never mistakes one for a reply) |
@@ -44,7 +44,7 @@ in `FramePacketTest`, and the Kotlin packer must reproduce it exactly.
 ```
 protocol/        pure Kotlin, no Android — JVM-unit-testable
   Protocol.kt        ports, command/event/mode/format constants
-  FramePacket.kt     <4sQQHHHHI binary header packer (byte-identical to PC)
+  FramePacket.kt     <4sQQHHHHIHH chunk header packer (byte-identical to PC)
   SensorBackend.kt   interface the router delegates device work to
   CommandRouter.kt   JSON command → reply; event builder
 net/
@@ -79,24 +79,28 @@ suggestions were overridden, on purpose:
    abstracted exactly the controls the protocol needs.
 
 2. **Periodic intra-refresh, not every-frame-keyframe** (§4.4's MediaCodec
-   snippet set `KEY_I_FRAME_INTERVAL=0`). The PC's UDP frame channel carries
-   **one frame per datagram with no reassembly** (`parse_frame_packet` reads a
-   single `recvfrom`). A full 1080p IDR every frame would blow the 65507-byte
-   IPv4 UDP ceiling and be dropped. Instead the encoder uses `KEY_LATENCY=1`,
-   CBR, a long GOP, and cyclic intra-refresh so every packet stays small.
+   snippet set `KEY_I_FRAME_INTERVAL=0`). Even though the frame channel now
+   fragments large frames across datagrams (see below), a full 1080p IDR every
+   frame would still be wasteful — many chunks per frame, more reassembly, more
+   loss exposure. The encoder uses `KEY_LATENCY=1`, CBR, a long GOP, and cyclic
+   intra-refresh so most frames stay within a single datagram and only the
+   occasional keyframe fragments.
 
 ---
 
 ## Transport constraints (consequences of the fixed PC protocol)
 
-- **One frame ≤ 65507 bytes.** `FrameStreamer` drops anything larger (with a
-  logged warning) rather than fragment into something the PC can't parse. Keep
-  the h264 bitrate moderate (default 6 Mbps @ 1080p). If you see "exceeds UDP
-  ceiling" warnings, lower the bitrate (`stream_set_target_bitrate`) or drop to
-  720p.
-- **raw_yuv is small-resolution only.** A 1080p NV21 frame is ~3.1 MB — it can
-  never fit one datagram. Use raw_yuv only at ≈256×170 or below; use h264 for
-  full resolution. (The PC defaults to `h264_lowlat`, so this is rarely an issue.)
+- **One *chunk* ≤ 65507 bytes; frames fragment freely.** `StreamPipeline` splits
+  a frame into `MAX_CHUNK_PAYLOAD` (60000 B) chunks sharing one `frame_id`; the
+  PC's `_FrameReassembler` joins them. A 1080p IDR or a full raw-YUV frame now
+  gets through. `FrameStreamer`'s ceiling check is just a defensive backstop —
+  if you ever see "chunk … exceeds UDP ceiling", that's a chunking bug, not a
+  bitrate problem.
+- **A lost chunk drops the whole frame.** Reassembly needs every chunk of a
+  `frame_id`; UDP loss of any one discards that frame (the PC evicts the partial
+  when a newer frame completes). So fragmenting heavily (huge IDRs) raises the
+  per-frame loss probability — keep frames mostly single-datagram via low-latency
+  CBR + intra-refresh, and reserve fragmentation for the occasional keyframe.
 - **h264 resolution must equal what the PC requested.** The PC reads fixed-size
   `w*h*3` BGR frames from ffmpeg, so the encoder streams exactly the `width×height`
   from `stream_start`. Don't change resolution mid-stream unless the PC resizes
@@ -104,36 +108,34 @@ suggestions were overridden, on purpose:
 
 ---
 
-## Frame transport robustness & the fragmentation upgrade path
+## Frame transport robustness — chunked UDP (NMS2)
 
-The single biggest risk in this design (flagged in PC-side review) is the
-one-frame-per-datagram UDP transport. Current mitigations, in priority order:
+On-device measurement showed 1080p keyframes (70–85 KB) blowing the 65507-byte
+datagram ceiling and being dropped, so the frame channel is now **protocol-level
+fragmented** (wire magic bumped `NMS1 → NMS2`):
 
-- **Stay under the ceiling.** h264 with low-latency CBR + cyclic intra-refresh
-  produces small, uniform frames (~12 KB at 6 Mbps/1080p60), so frames fit one
-  datagram without fragmentation.
+```
+header gains: uint16 chunk_index, uint16 chunk_count   (header 32 B -> 36 B)
+phone:  StreamPipeline.emit() splits payload into <=60000 B chunks, same
+        frame_id, repeats cam_id/fmt in each chunk
+PC:     phone_sensor.frame_decoder._FrameReassembler joins chunks by frame_id;
+        a partial frame_id is dropped once a newer one completes, and the
+        in-flight set is capped (PHONE_FRAME_REASSEMBLY_MAX) so a lost chunk
+        can't leak memory
+```
+
+This makes 1080p h264 keyframes — and full-resolution `raw_yuv` — viable. The
+byte layout stays locked by the cross-language golden test in `FramePacketTest`.
+
+Remaining mitigations that still matter:
+
+- **Keep most frames single-datagram.** h264 with low-latency CBR + cyclic
+  intra-refresh produces small, uniform frames (~12 KB at 6 Mbps/1080p60), so
+  only the occasional keyframe fragments — minimizing the per-frame loss
+  exposure of "one lost chunk drops the frame".
 - **Reliable parameter sets.** SPS/PPS are prepended to keyframes *and* resent
   ~once per second on ordinary frames, so a decoder that joined late — or whose
-  bootstrap IDR was dropped for exceeding the ceiling — still resyncs. (Without
-  this, intra-refresh streams could green-screen permanently if the first IDR
-  was oversized.)
-- **Honest drop.** `FrameStreamer` drops (with a warning) any frame over 65507 B
-  rather than emit something the PC can't parse.
-
-**If on-device measurement shows 1080p keyframes still dropping** (watch logcat
-for the ceiling warning, and the PC for stalls), the clean fix is protocol-level
-fragmentation — deliberately NOT built yet, to avoid churning the PC's tested
-code speculatively. The ready design:
-
-```
-header gains: uint16 chunk_index, uint16 chunk_count   (bump magic NMS1 -> NMS2)
-phone:  split payload into ≤~60000 B chunks, same frame_id, repeat cam_id/fmt
-PC:     phone_sensor.frame_decoder reassembles by frame_id; drop a frame_id once
-        a newer one is complete or after an N-frame timeout
-```
-
-This also makes `raw_yuv` viable at full resolution. Implement it only when
-measurements justify it — the smoke-test ladder below will tell you.
+  bootstrap IDR lost a chunk — still resyncs.
 
 ## Build & install
 

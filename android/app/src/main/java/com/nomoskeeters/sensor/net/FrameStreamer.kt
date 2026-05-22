@@ -9,14 +9,15 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 
 /**
- * UDP frame channel — sends one [FramePacket]-encoded datagram per frame to
+ * UDP frame channel — sends [FramePacket]-encoded datagrams (one per chunk) to
  * the PC on [Protocol.FRAME_PORT].
  *
  * The destination IP is the PC's address as learned from the TCP command
- * connection ([setDestination]); the port is fixed by the protocol. The PC
- * does no reassembly, so a packet larger than [FramePacket.MAX_UDP_PAYLOAD] is
- * dropped here with a warning rather than fragmented into something the PC
- * can't parse.
+ * connection ([setDestination]); the port is fixed by the protocol. Frames are
+ * already chunked to fit by `StreamPipeline` (split on
+ * [FramePacket.MAX_CHUNK_PAYLOAD]); the [FramePacket.MAX_UDP_PAYLOAD] check here
+ * is a defensive backstop — a datagram over the ceiling can't be sent, so it is
+ * dropped with a warning rather than failing at the socket.
  */
 class FrameStreamer {
     private var socket: DatagramSocket? = null
@@ -37,15 +38,17 @@ class FrameStreamer {
         Log.i(TAG, "frame destination -> ${addr?.hostAddress}:${Protocol.FRAME_PORT}")
     }
 
-    /** Send a fully-packed frame packet. Cheap no-op until a destination is set. */
+    /** Send one fully-packed chunk datagram. Cheap no-op until a destination
+     *  is set. */
     fun send(packet: ByteArray) {
         val sock = socket ?: return
         val to = dest ?: return
         if (packet.size > FramePacket.MAX_UDP_PAYLOAD) {
+            // Shouldn't happen: StreamPipeline splits on MAX_CHUNK_PAYLOAD.
             if (!oversizeWarned) {
-                Log.w(TAG, "frame ${packet.size}B exceeds UDP ceiling " +
-                        "${FramePacket.MAX_UDP_PAYLOAD}B — dropping. Lower the " +
-                        "bitrate/resolution or shorten the keyframe interval.")
+                Log.w(TAG, "chunk ${packet.size}B exceeds UDP ceiling " +
+                        "${FramePacket.MAX_UDP_PAYLOAD}B — dropping. This is a " +
+                        "chunking bug; MAX_CHUNK_PAYLOAD should keep chunks small.")
                 oversizeWarned = true
             }
             return

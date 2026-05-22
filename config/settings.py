@@ -186,6 +186,9 @@ PHONE_HEARTBEAT_INTERVAL_S: float = 1.0  # ping cadence; 3 misses = safe state
 PHONE_HEARTBEAT_TIMEOUT_S: float = 3.5   # mark unhealthy after this much silence
 PHONE_RECONNECT_BACKOFF_S: float = 1.0   # TCP reconnect delay (capped at 8s)
 PHONE_FRAME_QUEUE_MAX: int = 1           # latest-only, like the GoPro decoder
+PHONE_FRAME_REASSEMBLY_MAX: int = 8      # in-flight fragmented frames kept while
+                                          # waiting for chunks; oldest dropped past
+                                          # this (a lost chunk can't leak memory)
 PHONE_FFMPEG_HWACCEL: Optional[str] = "cuda"   # NVDEC for h264; None = software
 
 # ── OV9281 global-shutter UVC camera — V1 ground-truth targeting sensor ──

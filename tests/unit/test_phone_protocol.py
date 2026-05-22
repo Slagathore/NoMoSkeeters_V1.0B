@@ -83,3 +83,41 @@ def test_frame_packet_rejects_truncated_payload():
     wire = pack_frame_packet(pkt)
     with pytest.raises(ValueError):
         parse_frame_packet(wire[:-5])           # chop the payload tail
+
+
+def test_frame_packet_defaults_to_single_chunk():
+    pkt = FramePacket(1, 2, "main", "h264", 8, 8, b"\x01" * 10)
+    back = parse_frame_packet(pack_frame_packet(pkt))
+    assert (back.chunk_index, back.chunk_count) == (0, 1)
+
+
+def test_frame_packet_chunk_fields_round_trip():
+    pkt = FramePacket(5, 9, "telephoto", "h264", 1920, 1080,
+                      b"\xab" * 100, chunk_index=2, chunk_count=4)
+    back = parse_frame_packet(pack_frame_packet(pkt))
+    assert back.frame_id == 5
+    assert back.chunk_index == 2
+    assert back.chunk_count == 4
+    assert back.payload == b"\xab" * 100
+
+
+def test_pack_rejects_index_past_count():
+    with pytest.raises(ValueError):
+        pack_frame_packet(FramePacket(0, 0, "main", "h264", 4, 4, b"",
+                                      chunk_index=3, chunk_count=3))
+
+
+def test_pack_rejects_zero_count():
+    with pytest.raises(ValueError):
+        pack_frame_packet(FramePacket(0, 0, "main", "h264", 4, 4, b"",
+                                      chunk_index=0, chunk_count=0))
+
+
+def test_parse_rejects_bad_chunk_fields():
+    # Hand-craft a header with chunk_count=0 to exercise the parse-side guard.
+    import struct
+    from phone_sensor.protocol import _FRAME_MAGIC, _HEADER_FMT
+    bad = struct.pack(_HEADER_FMT, _FRAME_MAGIC, 0, 0, 4, 4, 4, 4, 0, 0, 0) \
+        + b"main" + b"nv21"
+    with pytest.raises(ValueError):
+        parse_frame_packet(bad)

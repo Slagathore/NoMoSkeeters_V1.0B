@@ -6,8 +6,9 @@ package com.nomoskeeters.sensor.protocol
  * This is the phone (server) side of the contract the PC's `phone_sensor/`
  * package speaks. The PC opens a TCP connection to the phone on [CMD_PORT] and
  * sends `\n`-delimited JSON commands; the phone replies on the same socket and
- * pushes unsolicited events. Decoded video frames flow the other way as UDP
- * datagrams to the PC on [FRAME_PORT], one frame per datagram.
+ * pushes unsolicited events. Video frames flow the other way as UDP datagrams
+ * to the PC on [FRAME_PORT] — one frame split into one or more chunks, which
+ * the PC reassembles by frame_id (see FramePacket).
  *
  * Pure Kotlin (no Android, no JSON lib) so it is unit-testable on a plain JVM.
  *

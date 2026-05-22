@@ -1,8 +1,9 @@
 """PhoneFrameDecoder — receive phone frame UDP packets and decode them.
 
-UDP datagrams arrive carrying our protocol's `FramePacket` (binary header +
-payload). The payload is either raw YUV (NV21 or I420 — depends on the phone's
-camera output) or an H.264 NAL stream. Either way the public surface is the
+UDP datagrams arrive carrying our protocol's `FramePacket` chunks (binary
+header + a slice of one frame). `_FrameReassembler` joins a frame's chunks by
+`frame_id`; the resulting payload is either raw YUV (NV21 or I420 — depends on
+the phone's camera output) or an H.264 NAL stream. Either way the public surface is the
 same cv2.VideoCapture-style `isOpened` / `read` / `release` API that
 `FfmpegStreamCapture` already uses, so PhoneSensor drops it in the same way
 GoProSensor uses the GoPro capture.
@@ -21,7 +22,8 @@ import socket
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Optional, Tuple
+from collections import OrderedDict
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -66,6 +68,59 @@ def _build_ffmpeg_command(ffmpeg_path: str, codec: str,
     return cmd
 
 
+class _FrameReassembler:
+    """Reassemble chunked frame packets by ``frame_id``.
+
+    Each UDP datagram carries one chunk (``FramePacket`` with
+    ``chunk_index`` / ``chunk_count``). A frame is complete once all its chunks
+    have arrived; we then return a single ``FramePacket`` with the payloads
+    concatenated in index order. An unfragmented frame (``chunk_count <= 1``)
+    is returned straight through with no buffering.
+
+    Partial frames are evicted as soon as a newer ``frame_id`` completes
+    (UDP can reorder, but the phone sends a frame's chunks back-to-back, so a
+    later completion means the older one lost a chunk), and the in-flight set
+    is capped at ``max_inflight`` so a permanently-missing chunk can't leak
+    memory.
+    """
+
+    def __init__(self, max_inflight: int = 8):
+        self._max_inflight = max(1, max_inflight)
+        # frame_id -> {"count": int, "chunks": {index: bytes}, "meta": FramePacket}
+        self._pending: "OrderedDict[int, Dict[str, Any]]" = OrderedDict()
+
+    def add(self, chunk: FramePacket) -> Optional[FramePacket]:
+        if chunk.chunk_count <= 1:
+            self._evict_through(chunk.frame_id)
+            return chunk
+
+        slot = self._pending.get(chunk.frame_id)
+        if slot is None:
+            slot = {"count": chunk.chunk_count, "chunks": {}, "meta": chunk}
+            self._pending[chunk.frame_id] = slot
+            while len(self._pending) > self._max_inflight:
+                self._pending.popitem(last=False)   # drop the oldest partial
+        slot["chunks"][chunk.chunk_index] = chunk.payload
+
+        if len(slot["chunks"]) < slot["count"]:
+            return None
+
+        meta: FramePacket = slot["meta"]
+        payload = b"".join(slot["chunks"][i] for i in range(slot["count"]))
+        self._evict_through(chunk.frame_id)
+        return FramePacket(
+            frame_id=meta.frame_id, capture_ts_us=meta.capture_ts_us,
+            camera_id=meta.camera_id, fmt=meta.fmt,
+            width=meta.width, height=meta.height,
+            payload=payload, chunk_index=0, chunk_count=1,
+        )
+
+    def _evict_through(self, frame_id: int) -> None:
+        """Drop the just-completed frame and any older still-pending ones."""
+        for fid in [f for f in self._pending if f <= frame_id]:
+            self._pending.pop(fid, None)
+
+
 class PhoneFrameDecoder:
     """UDP frame receiver with a cv2.VideoCapture-style API.
 
@@ -107,6 +162,8 @@ class PhoneFrameDecoder:
         self._opened = False
         self._latest_meta: Optional[FramePacket] = None
         self._meta_lock = threading.Lock()
+        self._reassembler = _FrameReassembler(
+            settings.PHONE_FRAME_REASSEMBLY_MAX)
         self._start()
 
     # ── Lifecycle ────────────────────────────────────────────────────────
@@ -254,6 +311,8 @@ class PhoneFrameDecoder:
     # ── Shared helpers ───────────────────────────────────────────────────
 
     def _recv_packet(self) -> Optional[FramePacket]:
+        """Receive one datagram (one chunk); return a fully reassembled frame
+        once its last chunk arrives, else None."""
         try:
             data, _ = self._sock.recvfrom(2_000_000)   # type: ignore[union-attr]
         except socket.timeout:
@@ -261,9 +320,12 @@ class PhoneFrameDecoder:
         except (ConnectionResetError, OSError):
             return None
         try:
-            packet = parse_frame_packet(data)
+            chunk = parse_frame_packet(data)
         except ValueError:
             return None
+        packet = self._reassembler.add(chunk)
+        if packet is None:
+            return None                          # frame still incomplete
         with self._meta_lock:
             self._latest_meta = packet
         return packet

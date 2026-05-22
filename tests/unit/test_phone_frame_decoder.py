@@ -7,8 +7,26 @@ import time
 
 import numpy as np
 
-from phone_sensor.frame_decoder import PhoneFrameDecoder
-from phone_sensor.protocol import FramePacket, pack_frame_packet
+from phone_sensor.frame_decoder import PhoneFrameDecoder, _FrameReassembler
+from phone_sensor.protocol import (MAX_CHUNK_PAYLOAD, FramePacket,
+                                   pack_frame_packet)
+
+
+def _chunk_datagrams(payload: bytes, *, frame_id: int, camera_id: str = "main",
+                     fmt: str = "nv21", width: int = 0, height: int = 0,
+                     chunk_size: int = MAX_CHUNK_PAYLOAD) -> list[bytes]:
+    """Split a frame payload into the wire chunk datagrams the phone would
+    emit, mirroring StreamPipeline.emit()."""
+    total = len(payload)
+    count = 1 if total <= chunk_size else (total + chunk_size - 1) // chunk_size
+    out = []
+    for i in range(count):
+        slice_ = payload[i * chunk_size:(i + 1) * chunk_size]
+        out.append(pack_frame_packet(FramePacket(
+            frame_id=frame_id, capture_ts_us=frame_id * 1000,
+            camera_id=camera_id, fmt=fmt, width=width, height=height,
+            payload=slice_, chunk_index=i, chunk_count=count)))
+    return out
 
 
 class _FakeUdpSock:
@@ -133,3 +151,70 @@ def test_unsupported_codec_fails_to_open():
         assert dec.isOpened() is False
     finally:
         dec.release()
+
+
+def test_fragmented_nv21_frame_reassembled_and_decoded():
+    # 256x192 NV21 = 73728 B > MAX_CHUNK_PAYLOAD, so it arrives as 2 chunks.
+    w, h = 256, 192
+    payload = bytes([128]) * (w * h * 3 // 2)
+    datagrams = _chunk_datagrams(payload, frame_id=0, width=w, height=h)
+    assert len(datagrams) > 1                     # genuinely fragmented
+    dec = PhoneFrameDecoder(width=w, height=h, codec="nv21",
+                            sock=_FakeUdpSock(datagrams))
+    try:
+        frame = _wait_for_frame(dec)
+        assert frame is not None
+        assert frame.shape == (h, w, 3)
+    finally:
+        dec.release()
+
+
+# ── Reassembler unit ─────────────────────────────────────────────────────
+
+def _chunk(frame_id, index, count, payload, *, fmt="h264"):
+    return FramePacket(frame_id=frame_id, capture_ts_us=0, camera_id="main",
+                       fmt=fmt, width=1, height=1, payload=payload,
+                       chunk_index=index, chunk_count=count)
+
+
+def test_reassembler_passes_single_chunk_through():
+    r = _FrameReassembler()
+    out = r.add(_chunk(0, 0, 1, b"whole"))
+    assert out is not None and out.payload == b"whole"
+
+
+def test_reassembler_joins_chunks_in_order():
+    r = _FrameReassembler()
+    assert r.add(_chunk(7, 0, 3, b"aaa")) is None
+    assert r.add(_chunk(7, 1, 3, b"bbb")) is None
+    out = r.add(_chunk(7, 2, 3, b"ccc"))
+    assert out is not None
+    assert out.payload == b"aaabbbccc"
+    assert (out.chunk_index, out.chunk_count) == (0, 1)   # presented as whole
+    assert out.frame_id == 7
+
+
+def test_reassembler_handles_out_of_order_chunks():
+    r = _FrameReassembler()
+    assert r.add(_chunk(1, 2, 3, b"C")) is None
+    assert r.add(_chunk(1, 0, 3, b"A")) is None
+    out = r.add(_chunk(1, 1, 3, b"B"))
+    assert out is not None and out.payload == b"ABC"
+
+
+def test_reassembler_evicts_stale_partial_when_newer_completes():
+    r = _FrameReassembler()
+    r.add(_chunk(1, 0, 2, b"x"))                   # frame 1 left incomplete
+    r.add(_chunk(2, 0, 1, b"y"))                   # frame 2 completes (single)
+    # The lingering chunk of frame 1 is gone; a late chunk for it can't finish.
+    assert r.add(_chunk(1, 1, 2, b"z")) is None
+
+
+def test_reassembler_caps_inflight_frames():
+    r = _FrameReassembler(max_inflight=2)
+    r.add(_chunk(1, 0, 2, b"a"))
+    r.add(_chunk(2, 0, 2, b"b"))
+    r.add(_chunk(3, 0, 2, b"c"))                   # evicts frame 1 (oldest)
+    assert r.add(_chunk(1, 1, 2, b"a2")) is None   # frame 1 was dropped
+    out = r.add(_chunk(3, 1, 2, b"c2"))            # frame 3 still alive
+    assert out is not None and out.payload == b"cc2"

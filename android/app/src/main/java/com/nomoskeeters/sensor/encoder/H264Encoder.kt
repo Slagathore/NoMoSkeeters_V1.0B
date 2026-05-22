@@ -22,11 +22,12 @@ import java.nio.ByteBuffer
  *
  * Low-latency knobs: `KEY_LATENCY=1`, realtime `KEY_PRIORITY`, CBR, and — the
  * key adaptation for this project — **cyclic intra-refresh** instead of periodic
- * full IDR frames. The PC's UDP frame channel carries one frame per datagram
- * with no reassembly, so a fat 1080p IDR would blow the 65507-byte ceiling and
- * be dropped. Intra-refresh spreads the intra blocks across frames, keeping
- * every packet small. (Documented deviation from the every-frame-keyframe
- * snippet in PHONE_SENSOR_BOOTSTRAP §4.4, forced by the transport.)
+ * full IDR frames. The frame channel now fragments oversized frames across
+ * datagrams (the PC reassembles by frame_id), so a fat 1080p IDR no longer gets
+ * dropped — but every chunk lost takes the whole frame with it, so intra-refresh
+ * is still preferred: it spreads intra blocks across frames, keeping most frames
+ * inside a single datagram. (Documented deviation from the every-frame-keyframe
+ * snippet in PHONE_SENSOR_BOOTSTRAP §4.4.)
  */
 class H264Encoder(
     private val width: Int,

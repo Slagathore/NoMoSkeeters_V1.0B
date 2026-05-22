@@ -13,10 +13,11 @@ import org.junit.Test
  */
 class FramePacketTest {
 
-    /** Python golden: FramePacket(7, 123456789, "main", "nv21", 4, 4, range(24)). */
+    /** Python golden: FramePacket(7, 123456789, "main", "nv21", 4, 4, range(24))
+     *  with the default chunk_index=0, chunk_count=1 (unfragmented). */
     private val golden =
-        "4e4d5331070000000000000015cd5b07000000000400040004000400180000006d61696e6e763231" +
-        "000102030405060708090a0b0c0d0e0f1011121314151617"
+        "4e4d5332070000000000000015cd5b070000000004000400040004001800000000000100" +
+        "6d61696e6e763231000102030405060708090a0b0c0d0e0f1011121314151617"
 
     @Test
     fun packsByteIdenticalToPythonGolden() {
@@ -34,12 +35,27 @@ class FramePacketTest {
     }
 
     @Test
-    fun headerIsThirtyTwoBytesPlusStringsPlusPayload() {
+    fun headerIsThirtySixBytesPlusStringsPlusPayload() {
         val packed = FramePacket.pack(1L, 2L, "x", "h264", 1920, 1080,
             byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte()))
-        // 32 header + 1 ("x") + 4 ("h264") + 3 payload = 40.
-        assertEquals(40, packed.size)
-        assertTrue(packed.toHex().startsWith("4e4d5331")) // "NMS1"
+        // 36 header + 1 ("x") + 4 ("h264") + 3 payload = 44.
+        assertEquals(44, packed.size)
+        assertTrue(packed.toHex().startsWith("4e4d5332")) // "NMS2"
+    }
+
+    @Test
+    fun chunkOfAFrameCarriesIndexCountAndItsSlice() {
+        // Second of three chunks: payload slice [4,8), chunk_index=1, count=3.
+        val payload = ByteArray(12) { it.toByte() }
+        val packed = FramePacket.pack(
+            frameId = 9L, captureTsUs = 0L, cameraId = "x", fmt = "h264",
+            width = 1, height = 1, payload = payload,
+            payloadOffset = 4, payloadLen = 4, chunkIndex = 1, chunkCount = 3)
+        // 36 header + 1 + 4 + 4 payload = 45.
+        assertEquals(45, packed.size)
+        // chunk_index/chunk_count occupy the last 4 header bytes (indices 32..35).
+        val hex = packed.toHex()
+        assertEquals("01000300", hex.substring(64, 72)) // index=1, count=3 (LE u16)
     }
 
     private fun ByteArray.toHex(): String =
