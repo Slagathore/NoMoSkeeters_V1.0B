@@ -41,6 +41,7 @@ class H264Encoder(
     private val bgThread = HandlerThread("phone-h264").apply { start() }
     private val bgHandler = Handler(bgThread.looper)
     private var csd: ByteArray? = null            // cached SPS+PPS (Annex-B)
+    private var emittedFrames = 0
     @Volatile private var started = false
 
     /** Configure + start. Returns the input surface for the camera to target,
@@ -129,7 +130,16 @@ class H264Encoder(
                     val isKey = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                     val frame = ByteArray(info.size)
                     buf.get(frame)
-                    val payload = if (isKey && csd != null) csd!! + frame else frame
+                    emittedFrames++
+                    // Prepend SPS/PPS on keyframes AND periodically (~1s) on
+                    // ordinary frames. With cyclic intra-refresh there may be
+                    // no recurring IDR, so a decoder that joined late — or one
+                    // whose bootstrap IDR was dropped for exceeding the UDP
+                    // ceiling — would otherwise never receive parameter sets.
+                    // SPS/PPS are tiny, so this never threatens the size guard.
+                    val resend = csd != null &&
+                        (isKey || emittedFrames % fps.coerceAtLeast(1) == 0)
+                    val payload = if (resend) csd!! + frame else frame
                     onEncoded(payload, isKey, info.presentationTimeUs)
                 }
             }

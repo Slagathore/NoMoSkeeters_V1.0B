@@ -104,6 +104,37 @@ suggestions were overridden, on purpose:
 
 ---
 
+## Frame transport robustness & the fragmentation upgrade path
+
+The single biggest risk in this design (flagged in PC-side review) is the
+one-frame-per-datagram UDP transport. Current mitigations, in priority order:
+
+- **Stay under the ceiling.** h264 with low-latency CBR + cyclic intra-refresh
+  produces small, uniform frames (~12 KB at 6 Mbps/1080p60), so frames fit one
+  datagram without fragmentation.
+- **Reliable parameter sets.** SPS/PPS are prepended to keyframes *and* resent
+  ~once per second on ordinary frames, so a decoder that joined late — or whose
+  bootstrap IDR was dropped for exceeding the ceiling — still resyncs. (Without
+  this, intra-refresh streams could green-screen permanently if the first IDR
+  was oversized.)
+- **Honest drop.** `FrameStreamer` drops (with a warning) any frame over 65507 B
+  rather than emit something the PC can't parse.
+
+**If on-device measurement shows 1080p keyframes still dropping** (watch logcat
+for the ceiling warning, and the PC for stalls), the clean fix is protocol-level
+fragmentation — deliberately NOT built yet, to avoid churning the PC's tested
+code speculatively. The ready design:
+
+```
+header gains: uint16 chunk_index, uint16 chunk_count   (bump magic NMS1 -> NMS2)
+phone:  split payload into ≤~60000 B chunks, same frame_id, repeat cam_id/fmt
+PC:     phone_sensor.frame_decoder reassembles by frame_id; drop a frame_id once
+        a newer one is complete or after an N-frame timeout
+```
+
+This also makes `raw_yuv` viable at full resolution. Implement it only when
+measurements justify it — the smoke-test ladder below will tell you.
+
 ## Build & install
 
 No Gradle wrapper jar is committed (it's a binary). Easiest path:
