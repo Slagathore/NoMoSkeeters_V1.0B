@@ -138,9 +138,14 @@ class OV9281Sensor(Sensor):
         return True
 
     def _configure(self, cap: Any) -> None:
-        """Apply MJPEG fourcc, then resolution/fps, then exposure — in that
-        order, because the high-speed modes only exist under MJPEG and the
-        driver re-evaluates valid (w,h,fps) when the codec changes."""
+        """Apply MJPEG fourcc, then resolution/fps, then MJPEG fourcc AGAIN,
+        then exposure. The high-speed modes only exist under MJPEG and the
+        driver re-evaluates valid (w,h,fps) when the codec changes — but on
+        DSHOW the first FOURCC set is silently dropped when W/H/FPS are set
+        after, so the camera ends up streaming raw YUY2 at ~30fps. Setting
+        FOURCC a second time *after* W/H/FPS forces it to stick (verified
+        2026-05-23: yields 188 fps actual at 640x480@210 vs 31 fps without)."""
+        fourcc = 0
         try:
             fourcc = cv2.VideoWriter_fourcc(*self._fourcc)  # type: ignore[attr-defined]
             self._safe_set(cap, cv2.CAP_PROP_FOURCC, fourcc)
@@ -149,6 +154,8 @@ class OV9281Sensor(Sensor):
         self._safe_set(cap, cv2.CAP_PROP_FRAME_WIDTH, self._req_width)
         self._safe_set(cap, cv2.CAP_PROP_FRAME_HEIGHT, self._req_height)
         self._safe_set(cap, cv2.CAP_PROP_FPS, self._req_fps)
+        if fourcc:
+            self._safe_set(cap, cv2.CAP_PROP_FOURCC, fourcc)
         # A depth-1 grab keeps read() returning the freshest frame (the driver
         # buffer otherwise queues stale frames at high fps).
         self._safe_set(cap, cv2.CAP_PROP_BUFFERSIZE, 1)

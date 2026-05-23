@@ -29,17 +29,37 @@ from config import settings                                      # noqa: E402
 from sensors.ov9281 import OV9281Sensor, _resolve_backend        # noqa: E402
 
 
+def _fourcc_to_str(v: float) -> str:
+    n = int(v) & 0xFFFFFFFF
+    return "".join(chr((n >> (8 * i)) & 0xFF) for i in range(4))
+
+
 def _list_indices(max_index: int, backend: str) -> None:
+    """Fingerprint each cv2 index so the OV9281 is identifiable at a glance:
+    it is the only common camera that supports 1280x800 *and* accepts the MJPG
+    fourcc (webcams clamp to 720/1080 and reject MJPG)."""
     print(f"scanning cv2 indices 0..{max_index} (backend={backend})...")
     flag = _resolve_backend(backend)
     found = 0
     for i in range(max_index + 1):
         cap = cv2.VideoCapture(i, flag)
-        if cap.isOpened():
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(f"  index {i}: OPEN  default {w}x{h}")
-            found += 1
+        if not cap.isOpened():
+            cap.release()
+            continue
+        found += 1
+        default_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        default_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        mjpg = cv2.VideoWriter_fourcc(*"MJPG")  # type: ignore[attr-defined]
+        cap.set(cv2.CAP_PROP_FOURCC, mjpg)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 800)
+        cap.set(cv2.CAP_PROP_FOURCC, mjpg)
+        got_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        got_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fourcc = _fourcc_to_str(cap.get(cv2.CAP_PROP_FOURCC))
+        tag = "  <-- looks like OV9281" if got_h == 800 and fourcc == "MJPG" else ""
+        print(f"  index {i}: default {default_w}x{default_h}  "
+              f"MJPG@1280x800 -> {got_w}x{got_h} fourcc={fourcc!r}{tag}")
         cap.release()
     if not found:
         print("  no cameras opened — check the USB connection / try --backend msmf")
