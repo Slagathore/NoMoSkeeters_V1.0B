@@ -162,7 +162,13 @@ CALIBRATION_VALIDATION_DEPTHS_M: list = [
 ]
 CALIBRATION_DRAGLINE_MULTI_SPEED: bool = True
 CALIBRATION_DRAGLINE_SPEEDS: list = [0.05, 0.20, 0.50, 1.00]
-LATENCY_SOFTWARE_LAG_MS: float = 0.0   # populated by drag-line calibration
+LATENCY_SOFTWARE_LAG_MS: float = 194.0  # phone h264_lowlat, measured 2026-05-22
+                                        # via tools/phone_latency.py (mean 194,
+                                        # min 187, max 204, stdev 8 over 10
+                                        # trials). GoPro Hero 13 USB-webcam
+                                        # baseline was 810 ms — pass explicitly
+                                        # to LaserManager(software_lag_ms=...)
+                                        # if you switch back to the GoPro.
 
 # Phone-as-sensor (PHONE_SENSOR_BOOTSTRAP.md). Replaces the GoPro as default
 # targeting camera; speaks NoMoSkeeters Sensor Protocol v1 over TCP+UDP.
