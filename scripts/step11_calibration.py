@@ -29,6 +29,7 @@ from laser.lasercube import LaserCubeInterface                     # noqa: E402
 from sensors.gopro import GoProSensor                              # noqa: E402
 from sensors.gopro_interface import GoProInterface                 # noqa: E402
 from sensors.local_cam import LocalCamSensor                        # noqa: E402
+from sensors.ov9281 import OV9281Sensor                             # noqa: E402
 from targeting.calibration import validate_multi_depth             # noqa: E402
 from targeting.calibration_controller import (                     # noqa: E402
     live_validation_sweep, run_live_calibration,
@@ -88,6 +89,11 @@ def _open_camera(kind: str, index: int, gopro_ip: str, decoder: str,
                   else PhoneSensorClient())
         cam = PhoneSensor(client=client, active_camera=phone_camera,
                           record_path=record)
+    elif kind == "ov9281":
+        # OV9281 global-shutter UVC — V1 ground-truth targeting sensor.
+        # 24ms command->seen latency (verified 2026-05-23), 188fps at
+        # 640x480. Pass --cam-index from `ov9281_probe.py --list`.
+        cam = OV9281Sensor(device_index=index)
     else:
         cam = LocalCamSensor(index=index)
     return cam if cam.open() else None
@@ -98,7 +104,8 @@ def main(argv=None) -> int:
     parser.add_argument("--ip", default="169.254.40.83")
     parser.add_argument("--src-ip", default="auto")
     parser.add_argument("--camera",
-                        choices=["local", "gopro", "kinect", "phone"],
+                        choices=["local", "gopro", "kinect", "phone",
+                                 "ov9281"],
                         default="local")
     parser.add_argument("--cam-index", type=int, default=0)
     parser.add_argument("--phone-camera",
@@ -167,7 +174,7 @@ def main(argv=None) -> int:
     # sensor_id defaults to the camera it was shot with.
     if args.sensor_id is None:
         args.sensor_id = {"gopro": "gopro", "kinect": "kinect_v2",
-                          "local": "local_cam",
+                          "local": "local_cam", "ov9281": "ov9281",
                           "phone": f"phone_{args.phone_camera}"}[args.camera]
     # Kinect calibration runs against the RGB stream (§8.10); record it +
     # any placement note so a reload knows the fit's provenance.

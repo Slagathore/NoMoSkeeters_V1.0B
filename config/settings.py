@@ -300,6 +300,21 @@ SAFETY_DRY_FIRE_MODE: bool = False
 SAFETY_OBJECT_SIZE_GUARD_ENABLED: bool = True
 SAFETY_MAX_TARGET_AREA_MM2: float = 10000.0   # ~10cm × 10cm
 
+# ── Step 12 — Safety moderator (gates cube.enable_output) ─────────────────
+SAFETY_MODERATOR_STALE_AFTER_S: float = 0.5   # SAFETY sensor goes stale →
+                                              # gate closes (fail-safe).
+SAFETY_MODERATOR_COOLDOWN_S: float = 1.0      # re-arm delay after unsafe → safe
+SAFETY_VOICE_WARNINGS_ENABLED: bool = True
+SAFETY_VOICE_COOLDOWN_S: float = 4.0          # per-message
+SAFETY_VOICE_RATE: int = 0                    # System.Speech rate, [-10, 10]
+SAFETY_PERSON_DETECT_ENABLED: bool = True     # HOG check on SAFETY RGB sensors
+SAFETY_PERSON_HOG_HIT_THRESHOLD: float = 0.0  # SVM margin floor; > 0 stricter
+SAFETY_KINECT_DEPTH_CHECK_ENABLED: bool = True
+SAFETY_KINECT_DEPTH_MIN_M: float = 0.5
+SAFETY_KINECT_DEPTH_MAX_M: float = 4.5
+SAFETY_KINECT_PERSON_MIN_HEIGHT_M: float = 0.9
+SAFETY_KINECT_PERSON_MAX_HEIGHT_M: float = 2.2
+
 
 # ── §12 — Web monitor ────────────────────────────────────────────────────
 WEB_MONITOR_ENABLED: bool = False
