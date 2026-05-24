@@ -38,6 +38,7 @@ from config import settings                                       # noqa: E402
 from detection.detector import Detector                           # noqa: E402
 from laser.laser_manager import LaserManager                      # noqa: E402
 from laser.lasercube import LaserCubeInterface                    # noqa: E402
+from monitoring.session_recorder import SessionRecorder            # noqa: E402
 from safety.kinect_safety_check import KinectSafetyCheck          # noqa: E402
 from safety.person_detector import HOGPersonDetector              # noqa: E402
 from safety.safety_moderator import (                             # noqa: E402
@@ -48,6 +49,8 @@ from sensors.base import SensorFrame, SensorRole                  # noqa: E402
 from sensors.kinect_v2 import KinectV2Sensor, pykinect2_available  # noqa: E402
 from sensors.ov9281 import OV9281Sensor                           # noqa: E402
 from targeting.calibration import CoordinateMapper                 # noqa: E402
+from targeting.extrinsics import CrossSensorExtrinsic              # noqa: E402
+from tracking.cross_sensor_fusion import CrossSensorFusion         # noqa: E402
 from tracking.tracker import Tracker                              # noqa: E402
 
 
@@ -116,6 +119,10 @@ def main(argv=None) -> int:                                  # noqa: C901
     ap.add_argument("--mount-config", default="bench")
     ap.add_argument("--sensor-id", default="ov9281",
                     help="sensor_id used to look up the calibration JSON")
+    ap.add_argument("--extrinsic", default=None, metavar="JSON",
+                    help="path to CrossSensorExtrinsic for kinect->ov9281 "
+                         "fusion. If omitted, each sensor's detections are "
+                         "tracked independently (no cross-confirmation).")
     ap.add_argument("--no-kinect", action="store_true")
     ap.add_argument("--no-person-rgb", action="store_true")
     ap.add_argument("--fov-margin", type=float, default=0.05)
@@ -222,30 +229,39 @@ def main(argv=None) -> int:                                  # noqa: C901
     moderator.arm()
     print("\nARMED. Press q or ESC in the preview window to exit.\n")
 
+    recorder = SessionRecorder(tag="live_fire")
+    if recorder.path is not None:
+        print(f"  session log: {recorder.path}")
+    moderator.set_verdict_sink(recorder.record_verdict)
+
     detector = Detector()
+    kinect_detector = Detector() if kinect is not None else None
     tracker = Tracker()
     counters = SessionCounters()
 
+    extrinsic = None
+    if args.extrinsic is not None:
+        try:
+            extrinsic = CrossSensorExtrinsic.load(args.extrinsic)
+            print(f"  extrinsic loaded: {extrinsic.src_sensor} -> "
+                  f"{extrinsic.dst_sensor}  (n={extrinsic.n_points}, "
+                  f"residual={extrinsic.residual_norm:.4f})")
+        except Exception as exc:
+            print(f"WARN: extrinsic load failed ({exc}) — falling back to "
+                  f"sensor-independent tracking")
+    fusion = CrossSensorFusion(extrinsic=extrinsic)
+
     laser_mgr: Optional[LaserManager] = None
     if cube is not None:
-        laser_mgr = LaserManager(transport=cube._transport
-                                  if hasattr(cube, "_transport") else cube,
-                                  mapper=mapper,
-                                  software_lag_ms=settings.LATENCY_SOFTWARE_LAG_MS)
+        # LaserCubeInterface inherits from LaserCubeTransport, so pass it
+        # directly to LaserManager.
+        laser_mgr = LaserManager(transport=cube, mapper=mapper,
+                                  software_lag_ms=settings.LATENCY_SOFTWARE_LAG_MS,
+                                  event_sink=recorder.record_event)
 
-    # Kinect frame poller in its own thread — the moderator needs frames
-    # at a steady cadence to keep the gate from going stale.
+    # Kinect frames are read inline in the main loop below (the Kinect's
+    # 30fps cadence is comfortable inside the OV9281's ~200fps loop).
     stop = threading.Event()
-    if kinect is not None:
-        def _kinect_loop():
-            while not stop.is_set():
-                f = kinect.read()
-                if f is not None:
-                    moderator.on_frame(f)
-                else:
-                    time.sleep(0.002)
-        threading.Thread(target=_kinect_loop, daemon=True,
-                         name="Spotter-Kinect").start()
 
     win = "live_fire — q/ESC quit"
     if not args.no_window:
@@ -279,6 +295,25 @@ def main(argv=None) -> int:                                  # noqa: C901
                                          timestamp=now)
             counters.detections += len(dets)
             tracks = tracker.update(dets, now)
+            for d in dets:
+                fusion.ingest_detection(d)
+
+            # Kinect detections feed the fusion only — they don't drive the
+            # firing tracker (OV9281 is the primary). With an extrinsic loaded
+            # this gives cross-sensor confirmation; without one, the calls
+            # are still cheap and the solo tracks just sit in the fusion.
+            if kinect_detector is not None:
+                kinect_frame = (kinect.read() if kinect is not None else None)
+                if kinect_frame is not None and kinect_frame.rgb is not None:
+                    for d in kinect_detector.detect_bgsub(
+                            kinect_frame.rgb,
+                            sensor_id="kinect_v2",
+                            timestamp=now):
+                        fusion.ingest_detection(d)
+                # Kinect frames also need to reach the moderator — push the
+                # depth frame through if available.
+                if kinect_frame is not None and kinect_frame.depth is not None:
+                    moderator.on_frame(kinect_frame)
 
             verdict = moderator.verdict()
             safe = verdict.safe
@@ -338,6 +373,7 @@ def main(argv=None) -> int:                                  # noqa: C901
             kinect.close()
         if cube is not None:
             cube.disconnect()
+        recorder.close()
 
     elapsed = time.monotonic() - t_start
     print("\n" + "-" * 60)
