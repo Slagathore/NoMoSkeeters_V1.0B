@@ -66,6 +66,10 @@ class KillCam:
         self._sleep = sleeper
 
         self._lock = threading.Lock()
+        # Serializes per_shot clips: nothing stops an operator configuring
+        # debounce < record_seconds, and two concurrent _record_clip
+        # threads would race preset/shutter calls on one physical camera.
+        self._record_lock = threading.Lock()
         self._last_fire = -1e9
         self._continuous_started = False
         self.shots_witnessed = 0
@@ -139,13 +143,23 @@ class KillCam:
 
     def _record_clip(self) -> None:
         """per_shot: preset → shutter on → wait → shutter off."""
-        self._safe(lambda: self._control.load_preset(self._preset_id), "load_preset")
-        if not self._safe(lambda: self._control.start_recording(), "start_recording"):
+        if not self._record_lock.acquire(blocking=False):
+            # A clip is already rolling — this shot lands in it anyway.
+            _log.debug("killcam: clip in progress; skipping re-trigger")
             return
         try:
-            self._sleep(self._record_s)
+            self._safe(lambda: self._control.load_preset(self._preset_id),
+                       "load_preset")
+            if not self._safe(lambda: self._control.start_recording(),
+                              "start_recording"):
+                return
+            try:
+                self._sleep(self._record_s)
+            finally:
+                self._safe(lambda: self._control.stop_recording(),
+                           "stop_recording")
         finally:
-            self._safe(lambda: self._control.stop_recording(), "stop_recording")
+            self._record_lock.release()
 
     @staticmethod
     def _safe(fn: Callable[[], Any], what: str) -> bool:

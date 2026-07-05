@@ -142,6 +142,20 @@ class PhoneThermalEvent:
 
 
 @dataclass(frozen=True)
+class SensorHealthEvent:
+    """Worker-level sensor liveness from SensorManager: a sensor whose
+    read() stops producing frames is closed and reopened with backoff.
+    Distinct from camera-side status (GoProStatusEvent / PhoneThermalEvent)
+    — this covers the PC side dying under us: dead USB device, crashed
+    ffmpeg decoder, wedged SDK."""
+    timestamp: float
+    sensor_id: str
+    state: str            # "stalled" | "reopening" | "recovered" | "reopen_failed"
+    detail: str = ""
+    stalled_for_s: float = 0.0
+
+
+@dataclass(frozen=True)
 class LatencySample:
     """One end-to-end pipeline latency measurement."""
     timestamp: float

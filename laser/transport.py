@@ -90,6 +90,14 @@ class LaserCubeTransport(ABC):
     def _next_msg_num(self) -> int:
         """Return the next msg_num to use, advancing internal counter."""
 
+    def next_msg_num(self) -> int:
+        """Public sequence API for external streamers (e.g.
+        targeting.patterns.stream_dragline) that drive send_chunk()
+        directly. Allocating through here keeps their packets in the same
+        msg_num sequence the transport's own send_frame() uses — never
+        reach for the underscore method from outside the class."""
+        return self._next_msg_num()
+
     # ── State surface ────────────────────────────────────────────────────
 
     @abstractmethod

@@ -28,7 +28,7 @@ class _BenchCube:
         self._state["lit"] = bool(p.r or p.g or p.b)   # blanked => no dot
         return True
 
-    def _next_msg_num(self):
+    def next_msg_num(self):
         return 0
 
 

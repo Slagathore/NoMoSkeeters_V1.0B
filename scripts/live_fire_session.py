@@ -51,8 +51,10 @@ from safety.voice_warning import VoiceWarning                     # noqa: E402
 from sensors.base import SensorFrame, SensorRole                  # noqa: E402
 from sensors.kinect_v2 import KinectV2Sensor, pykinect2_available  # noqa: E402
 from sensors.ov9281 import OV9281Sensor                           # noqa: E402
+from targeting import fire_control                                 # noqa: E402
 from targeting.calibration import CoordinateMapper                 # noqa: E402
 from targeting.extrinsics import CrossSensorExtrinsic              # noqa: E402
+from targeting.fire_control import FireGate                        # noqa: E402
 from tracking.cross_sensor_fusion import CrossSensorFusion         # noqa: E402
 from tracking.tracker import Tracker                              # noqa: E402
 
@@ -71,6 +73,7 @@ class SessionCounters:
     shots_blocked_safety: int = 0
     shots_blocked_fov: int = 0
     shots_blocked_cooldown: int = 0
+    shots_blocked_oversize: int = 0
 
 
 def _open_ov9281(index: int) -> Optional[OV9281Sensor]:
@@ -94,6 +97,62 @@ def _load_mapper(sensor_id: str, scene: str,
     if not path.is_file():
         return None
     return CoordinateMapper.load(path)
+
+
+def _read_hardened(sensor, label: str, state: dict,
+                   recorder=None) -> Optional[SensorFrame]:
+    """sensor.read() that survives driver throws and reopens a stalled
+    sensor inline. The live loop stays pull-based (a manager poll would
+    add jitter to the OV9281's ~5ms frame budget), so the reconnect
+    doctrine from SensorManager is replicated here in miniature: >2s
+    without a frame → close + reopen, retried at most every 2s. While a
+    SAFETY sensor is down, moderator staleness keeps the gate closed."""
+    now = time.monotonic()
+    try:
+        frame = sensor.read()
+    except Exception as exc:
+        frame = None
+        if now - state.get("last_err_log", 0.0) > 5.0:
+            state["last_err_log"] = now
+            print(f"WARN: {label} read() raised ({exc!r}) — treating as "
+                  f"stalled")
+    if frame is not None:
+        state["last_frame"] = now
+        return frame
+    last = state.setdefault("last_frame", now)
+    if now - last > 2.0 and now - state.get("last_reopen", 0.0) > 2.0:
+        state["last_reopen"] = now
+        print(f"WARN: {label} stalled {now - last:.1f}s — reopening")
+        if recorder is not None:
+            recorder.record_note(f"{label} stalled {now - last:.1f}s; "
+                                 f"reopening")
+        try:
+            sensor.close()
+        except Exception:
+            pass
+        try:
+            if sensor.open():
+                print(f"  {label} reopened")
+                if recorder is not None:
+                    recorder.record_note(f"{label} reopened")
+        except Exception as exc:
+            print(f"  {label} reopen failed ({exc!r}); will retry")
+    return None
+
+
+def _make_depth_sampler(kinect: KinectV2Sensor, depth):
+    """(x_norm, y_norm) → camera-relative (x_m, y_m, z_m) via the depth
+    plane. RGB→depth registration is approximated by normalized coords
+    (the RGB and depth FoVs differ; exact registration needs the SDK
+    CoordinateMapper — same acknowledged approximation as the nominal
+    intrinsics in sensors/kinect_v2.py)."""
+    dh, dw = depth.shape[:2]
+
+    def sample(x_norm: float, y_norm: float):
+        xd = int(x_norm * (dw - 1))
+        yd = int(y_norm * (dh - 1))
+        return kinect.world_position(xd, yd, float(depth[yd, xd]))
+    return sample
 
 
 def _preflight(cube: LaserCubeInterface) -> bool:
@@ -317,19 +376,26 @@ def main(argv=None) -> int:                                  # noqa: C901
     if not args.no_window:
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
-    last_track_fire: dict[int, float] = {}
-    last_any_fire = 0.0
-    min_fire_interval = 1.0 / MAX_SHOT_RATE_HZ
+    fire_gate = FireGate(
+        moderator=moderator,
+        fov_margin=args.fov_margin,
+        per_track_cooldown_s=PER_TRACK_FIRE_COOLDOWN_S,
+        max_rate_hz=MAX_SHOT_RATE_HZ,
+        frame_width_px=settings.OV9281_WIDTH,
+    )
     t_start = time.monotonic()
     fps_meter = FpsMeter()
     last_shot: Optional[tuple[float, float, float]] = None  # (t, x_n, y_n)
+    ov_state: dict = {}
+    kinect_state: dict = {}
 
     try:
         while True:
-            frame = ov.read()
+            frame = _read_hardened(ov, "ov9281", ov_state, recorder)
             if frame is None or frame.rgb is None:
                 if args.seconds and time.monotonic() - t_start > args.seconds:
                     break
+                time.sleep(0.001)
                 continue
 
             if hog is not None:
@@ -357,12 +423,19 @@ def main(argv=None) -> int:                                  # noqa: C901
             # this gives cross-sensor confirmation; without one, the calls
             # are still cheap and the solo tracks just sit in the fusion.
             if kinect_detector is not None:
-                kinect_frame = (kinect.read() if kinect is not None else None)
+                kinect_frame = (_read_hardened(kinect, "kinect_v2",
+                                               kinect_state, recorder)
+                                if kinect is not None else None)
                 if kinect_frame is not None and kinect_frame.rgb is not None:
+                    sampler = (_make_depth_sampler(kinect, kinect_frame.depth)
+                               if kinect is not None
+                               and kinect_frame.depth is not None else None)
                     for d in kinect_detector.detect_bgsub(
                             kinect_frame.rgb,
                             sensor_id="kinect_v2",
-                            timestamp=now):
+                            timestamp=now,
+                            world_fn=sampler):
+                        recorder.record_detection(d)
                         fusion.ingest_detection(d)
                 # Kinect frames also need to reach the moderator — push the
                 # depth frame through if available.
@@ -376,30 +449,20 @@ def main(argv=None) -> int:                                  # noqa: C901
                 if not t.fire_eligible:
                     continue
                 counters.confirmed_tracks += 1
-                x_n, y_n = float(t.state[0]), float(t.state[1])
-                if not (args.fov_margin <= x_n <= 1.0 - args.fov_margin
-                        and args.fov_margin <= y_n <= 1.0 - args.fov_margin):
-                    counters.shots_blocked_fov += 1
+                decision = fire_gate.evaluate(t, now, safe_hint=safe)
+                if not decision.fire:
+                    if decision.reason == fire_control.OUTSIDE_FOV:
+                        counters.shots_blocked_fov += 1
+                    elif decision.reason == fire_control.UNSAFE:
+                        counters.shots_blocked_safety += 1
+                    elif decision.reason == fire_control.OVERSIZE:
+                        counters.shots_blocked_oversize += 1
+                    elif decision.reason in (fire_control.COOLDOWN_TRACK,
+                                             fire_control.COOLDOWN_GLOBAL):
+                        counters.shots_blocked_cooldown += 1
                     continue
-                if not safe:
-                    counters.shots_blocked_safety += 1
-                    continue
-                if (now - last_track_fire.get(t.track_id, 0.0)
-                        < PER_TRACK_FIRE_COOLDOWN_S):
-                    counters.shots_blocked_cooldown += 1
-                    continue
-                if now - last_any_fire < min_fire_interval:
-                    counters.shots_blocked_cooldown += 1
-                    continue
-                # Re-poll the gate immediately before each shot — the
-                # frame-level verdict above can be stale by now (moderator
-                # contract: a burst must poll between shots).
-                if not moderator.is_safe_to_fire():
-                    counters.shots_blocked_safety += 1
-                    continue
-                last_track_fire[t.track_id] = now
-                last_any_fire = now
                 counters.shots_fired += 1
+                x_n, y_n = float(t.state[0]), float(t.state[1])
                 det = getattr(t, "last_detection", None)
                 recorder.record_track({
                     "track_id": t.track_id,
@@ -408,6 +471,7 @@ def main(argv=None) -> int:                                  # noqa: C901
                     "det_to_fire_ms": (now - t.last_update_ts) * 1000.0,
                     "x_norm": x_n,
                     "y_norm": y_n,
+                    "target_area_mm2": decision.target_area_mm2,
                     "fired": True,
                 })
                 last_shot = (time.monotonic(), x_n, y_n)
@@ -468,6 +532,7 @@ def main(argv=None) -> int:                                  # noqa: C901
     print(f"  blocked by safety   : {counters.shots_blocked_safety}")
     print(f"  blocked outside FOV : {counters.shots_blocked_fov}")
     print(f"  blocked by cooldown : {counters.shots_blocked_cooldown}")
+    print(f"  blocked oversize    : {counters.shots_blocked_oversize}")
     return 0
 
 

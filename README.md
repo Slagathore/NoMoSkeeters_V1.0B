@@ -75,7 +75,7 @@ public repo.
 
 ```powershell
 python tools/gopro_view.py --ip 172.27.109.51        # live preview window
-python gp_py_smoke_subprocess.py --ip 172.27.109.51  # headless frame check
+python tools/gp_py_smoke_subprocess.py --ip 172.27.109.51  # headless frame check
 ```
 
 In code: `GoProSensor(control=GoProInterface(ip="<camera>"), decoder="ffmpeg")`
@@ -197,8 +197,9 @@ time for faster apparent flight. You can still override the defaults with
 - `tools/gopro_latency.py` — command-to-visible-dot latency for the GoPro feed
 - `tools/kinect_probe.py` — Kinect RGB/depth/IR liveness, direct or via SensorManager
 - `tools/kinect_latency.py` — command-to-visible-dot latency for Kinect RGB/IR/depth
-- `lasercube_protocol_probe.py` — LaserCube protocol probe
-- `sha204_cold_test.py` — confirms the cube emits light without an auth handshake
+- `tools/lasercube_protocol_probe.py` — LaserCube protocol probe
+- `tools/sha204_cold_test.py` — confirms the cube emits light without an auth handshake
+- `tools/web_monitor.py` — live web dashboard tailing a session's events.jsonl
 
 ## Repo layout
 

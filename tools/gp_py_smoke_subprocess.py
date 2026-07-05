@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sensors.ffmpeg_capture import FfmpegStreamCapture, local_ip_for  # noqa: E402
 

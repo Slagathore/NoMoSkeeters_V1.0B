@@ -1524,7 +1524,7 @@ EVENT_TYPES = [
 # config/settings.py — web monitor section
 WEB_MONITOR_ENABLED: bool = False           # off by default
 WEB_MONITOR_BIND_HOST: str = "127.0.0.1"    # localhost only by default
-WEB_MONITOR_PORT: int = 8765
+WEB_MONITOR_PORT: int = 8768
 WEB_MONITOR_MJPEG_FPS: int = 10             # downsampled
 WEB_MONITOR_MJPEG_QUALITY: int = 70
 WEB_MONITOR_EVENT_LOG_SIZE: int = 1000
@@ -1860,7 +1860,7 @@ This is the big one. **Discard `laser/lasercube_interface.py` entirely.** Replac
 - Wire into bus.
 - Configurable via settings, off by default, localhost by default.
 
-**Acceptance**: browser to `http://localhost:8765/` shows live state; events appear; MJPEG smooth.
+**Acceptance**: browser to `http://localhost:8768/` shows live state; events appear; MJPEG smooth.
 
 ### Step 12 — CLI completion
 

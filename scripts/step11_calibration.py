@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import settings                                       # noqa: E402
 from laser.lasercube import LaserCubeInterface                     # noqa: E402
+from safety.moderator_guard import open_moderator_guard            # noqa: E402
 from sensors.gopro import GoProSensor                              # noqa: E402
 from sensors.gopro_interface import GoProInterface                 # noqa: E402
 from sensors.local_cam import LocalCamSensor                        # noqa: E402
@@ -169,6 +170,12 @@ def main(argv=None) -> int:
                              "is bumped, so record where it sat).")
     parser.add_argument("--scene", default="bench")
     parser.add_argument("--mount-config", default="bench")
+    parser.add_argument("--no-moderator", action="store_true",
+                        help="run WITHOUT the Kinect/heartbeat safety "
+                             "moderator (bench-style: preflight + typed "
+                             "confirmation only). Implied by --camera kinect "
+                             "— the Kinect can't calibrate and watch the "
+                             "room at the same time.")
     args = parser.parse_args(argv)
 
     # sensor_id defaults to the camera it was shot with.
@@ -195,6 +202,17 @@ def main(argv=None) -> int:
     if not _preflight(cube):
         cube.disconnect()
         return 1
+
+    guard = None
+    if args.camera == "kinect" and not args.no_moderator:
+        print("note: --camera kinect uses the Kinect as the calibration "
+              "camera, so the moderator's person check is unavailable — "
+              "running unmoderated (as if --no-moderator).")
+    elif not args.no_moderator:
+        guard = open_moderator_guard(cube)
+        if guard is None:
+            cube.disconnect()
+            return 1
 
     camera = _open_camera(args.camera, args.cam_index, args.gopro_ip,
                           args.decoder, _FOV_CODES[args.fov], args.record,
@@ -235,8 +253,18 @@ def main(argv=None) -> int:
 
     rc = 1
     try:
-        cube.enable_output()
-        print("\nLASER ON — calibration sweep")
+        if guard is not None:
+            guard.start()
+            guard.moderator.arm()
+            print("\nwaiting for the safety gate to open...")
+            if not guard.wait_safe():
+                print("FAIL: safety gate did not open: "
+                      + "; ".join(guard.moderator.verdict().reasons))
+                return rc
+            print("LASER ON (moderator gate open) — calibration sweep")
+        else:
+            cube.enable_output()
+            print("\nLASER ON — calibration sweep")
         try:
             run = run_live_calibration(
                 cube, camera, pattern=args.pattern, sensor_id=args.sensor_id,
@@ -308,6 +336,8 @@ def main(argv=None) -> int:
                       "volume. Re-seat the camera, recalibrate, or escalate "
                       "to a depth-aware mapper (v0.3).")
     finally:
+        if guard is not None:
+            guard.stop()            # disarm → moderator drives disable_output
         cube.disable_output()
         print("LASER OFF")
         camera.close()

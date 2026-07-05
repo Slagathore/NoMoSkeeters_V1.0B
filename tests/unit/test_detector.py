@@ -77,3 +77,21 @@ def test_with_classifier_runs_classification():
     # A compact 16×16 blob clears the heuristic → labeled mosquito, kept.
     assert len(dets) >= 1
     assert dets[0].classifier_label == "mosquito"
+
+
+def test_world_fn_populates_world_fields():
+    det = Detector()
+    _warm_up(det)
+    d = det.detect_bgsub(_frame_with_blob(), sensor_id="kinect_v2",
+                         world_fn=lambda xn, yn: (0.1, -0.2, 2.5))[0]
+    assert d.z_world_m == 2.5
+    assert d.x_world_m == 0.1
+    assert d.y_world_m == -0.2
+
+
+def test_world_fn_none_result_stays_2d():
+    det = Detector()
+    _warm_up(det)
+    d = det.detect_bgsub(_frame_with_blob(), sensor_id="kinect_v2",
+                         world_fn=lambda xn, yn: None)[0]
+    assert d.z_world_m is None and d.x_world_m is None

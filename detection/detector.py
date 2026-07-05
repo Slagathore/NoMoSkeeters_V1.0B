@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -21,6 +21,12 @@ from detection.classifier import DetectionClassifier
 from events.schemas import DetectionEvent
 
 _log = logging.getLogger(__name__)
+
+# Optional world-position sampler: (x_norm, y_norm) → (x_m, y_m, z_m) or
+# None. Supplied by depth-capable call sites (e.g. Kinect); populates the
+# DetectionEvent's *_world_m fields that kalman_3d tracking and the
+# object-size guard consume.
+WorldFn = Callable[[float, float], Optional[tuple[float, float, float]]]
 
 
 class Detector:
@@ -44,7 +50,9 @@ class Detector:
                      frame: np.ndarray,
                      *,
                      sensor_id: str = "",
-                     timestamp: Optional[float] = None) -> list[DetectionEvent]:
+                     timestamp: Optional[float] = None,
+                     world_fn: Optional[WorldFn] = None,
+                     ) -> list[DetectionEvent]:
         """Run the background-subtraction pipeline on one BGR frame."""
         if timestamp is None:
             timestamp = time.monotonic()
@@ -89,7 +97,8 @@ class Detector:
                     continue
 
             detections.append(self._build_detection(
-                frame, c, label, conf, det_id, sensor_id, timestamp))
+                frame, c, label, conf, det_id, sensor_id, timestamp,
+                world_fn))
             det_id += 1
         return detections
 
@@ -100,7 +109,8 @@ class Detector:
                          conf: float,
                          detection_id: int,
                          sensor_id: str,
-                         timestamp: float) -> DetectionEvent:
+                         timestamp: float,
+                         world_fn: Optional[WorldFn] = None) -> DetectionEvent:
         """Construct a DetectionEvent from one accepted contour."""
         area = float(cv2.contourArea(contour))
         x, y, w, h = cv2.boundingRect(contour)
@@ -112,16 +122,32 @@ class Detector:
             cx, cy = x + w / 2.0, y + h / 2.0
 
         frame_h, frame_w = frame.shape[:2]
+        x_norm = cx / max(1, frame_w - 1)
+        y_norm = cy / max(1, frame_h - 1)
+
+        x_w = y_w = z_w = None
+        if world_fn is not None:
+            try:
+                w3 = world_fn(x_norm, y_norm)
+            except Exception:                             # pragma: no cover
+                _log.exception("world_fn raised; detection stays 2D")
+                w3 = None
+            if w3 is not None:
+                x_w, y_w, z_w = float(w3[0]), float(w3[1]), float(w3[2])
+
         return DetectionEvent(
             timestamp=timestamp,
             sensor_id=sensor_id,
             detection_id=detection_id,
-            x_norm=cx / max(1, frame_w - 1),
-            y_norm=cy / max(1, frame_h - 1),
+            x_norm=x_norm,
+            y_norm=y_norm,
             x_px=int(round(cx)),
             y_px=int(round(cy)),
             area_pixels=area,
             bbox=(int(x), int(y), int(w), int(h)),
             classifier_label=label,
             classifier_confidence=float(conf),
+            x_world_m=x_w,
+            y_world_m=y_w,
+            z_world_m=z_w,
         )

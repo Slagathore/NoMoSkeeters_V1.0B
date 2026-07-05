@@ -155,7 +155,7 @@ def stream_dragline(transport: LaserCubeTransport,
             continue
         chunk = points[i:i + chunk_size]
         send_ts = time.monotonic()
-        msg_num = transport._next_msg_num()
+        msg_num = transport.next_msg_num()
         if not transport.send_chunk(chunk, msg_num, frame_num=0):
             _log.error("stream_dragline: send_chunk failed at idx %d", i)
             return

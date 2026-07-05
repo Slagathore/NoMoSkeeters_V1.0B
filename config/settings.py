@@ -1,8 +1,10 @@
 """Single source of truth for every tunable in the system.
 
-Default values are constants at module level. User-supplied JSON overrides
-(via ConfigManager) overlay on top. No magic numbers anywhere else in the
-codebase — if you find one, lift it here before doing anything else.
+Default values are constants at module level. Any setting can be
+overridden per-process with an `NMS_<NAME>` environment variable (coerced
+to the default's type — see `_apply_env_overrides` at the bottom). No
+magic numbers anywhere else in the codebase — if you find one, lift it
+here before doing anything else.
 
 Runtime-mutability convention: by default, settings are runtime-mutable.
 Settings listed in `RESTART_REQUIRED` (bottom of this file) need an app
@@ -210,6 +212,12 @@ OV9281_BACKEND: str = "auto"           # "auto"|"dshow"|"msmf"|"v4l2"|"any"
 OV9281_FOURCC: str = "MJPG"            # the camera streams MJPEG
 OV9281_WIDTH: int = 640
 OV9281_HEIGHT: int = 480
+
+# Sensor worker liveness (SensorManager): a sensor that produces no frames
+# for SENSOR_DEAD_AFTER_S is closed and reopened, backing off from
+# SENSOR_REOPEN_BACKOFF_S doubling to a 10s cap. 0 disables reconnect.
+SENSOR_DEAD_AFTER_S: float = 2.0
+SENSOR_REOPEN_BACKOFF_S: float = 1.0
 OV9281_FPS: int = 210                  # 640x480 @ 210fps mode (datasheet)
                                        #   1280x800@120 / 320x240@420 / 160x120@640
 OV9281_AUTO_EXPOSURE: bool = False     # lock exposure for crisp fast frames
@@ -319,7 +327,7 @@ SAFETY_KINECT_PERSON_MAX_HEIGHT_M: float = 2.2
 # ── §12 — Web monitor ────────────────────────────────────────────────────
 WEB_MONITOR_ENABLED: bool = False
 WEB_MONITOR_BIND_HOST: str = "127.0.0.1"
-WEB_MONITOR_PORT: int = 8765
+WEB_MONITOR_PORT: int = 8768
 WEB_MONITOR_MJPEG_FPS: int = 10
 WEB_MONITOR_MJPEG_QUALITY: int = 70
 WEB_MONITOR_EVENT_LOG_SIZE: int = 1000
@@ -360,3 +368,39 @@ RESTART_REQUIRED: set = {
     "SESSIONS_DIR",
     "USER_CONFIG_PATH",
 }
+
+
+# ── Environment overrides ────────────────────────────────────────────────
+# NMS_<NAME> overrides any setting above for this process, coerced to the
+# default's type. This replaces the never-adopted ConfigManager layer
+# (removed per Fable's audit 2026-07-04): the pipeline reads this module's
+# attributes directly, so the override has to happen here at import time
+# to actually take effect. Tuples/dicts are not env-overridable — edit
+# the file for those.
+def _apply_env_overrides() -> None:
+    import os
+    g = globals()
+    for name, default in list(g.items()):
+        if not name.isupper():
+            continue
+        raw = os.environ.get(f"NMS_{name}")
+        if raw is None:
+            continue
+        try:
+            if isinstance(default, bool):        # before int — bool ⊂ int
+                g[name] = raw.strip().lower() in ("1", "true", "yes", "on")
+            elif isinstance(default, int):
+                g[name] = int(raw, 0)
+            elif isinstance(default, float):
+                g[name] = float(raw)
+            elif isinstance(default, Path):
+                g[name] = Path(raw)
+            elif isinstance(default, str) or default is None:
+                g[name] = raw
+        except ValueError:
+            raise SystemExit(
+                f"NMS_{name}={raw!r} does not parse as "
+                f"{type(default).__name__}")
+
+
+_apply_env_overrides()

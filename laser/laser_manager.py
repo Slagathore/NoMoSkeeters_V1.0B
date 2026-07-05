@@ -12,6 +12,7 @@ Reference: BOOTSTRAP_AMENDMENTS.md §9.11, §8.8 (lead-aim), Step 10.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from typing import Callable, Optional
@@ -38,6 +39,23 @@ def _galvo_norm_to_dac(v: float) -> int:
     return max(COORD_MIN, min(COORD_MAX, int(round(v * COORD_MAX))))
 
 
+def _dwell_cap_ms(requested_ms: float, label: str) -> float:
+    """Enforce the §10.2 safety dwell ceiling. Pattern knobs
+    (SHOT_PATTERN_DWELL_MS, CONE_BZZT_DURATION_S, ...) say how long a
+    shot WANTS to hold the target; SAFETY_DWELL_LIMIT_MS says how long
+    it MAY. Returns the capped value, warning loudly when it bites —
+    raise the limit in settings if the clamp is unwanted, don't bypass
+    it here."""
+    if not settings.SAFETY_DWELL_LIMIT_ENABLED:
+        return requested_ms
+    limit = float(settings.SAFETY_DWELL_LIMIT_MS)
+    if requested_ms > limit:
+        _log.warning("%s wants %.0fms on-target but SAFETY_DWELL_LIMIT_MS "
+                     "is %.0fms — clamping", label, requested_ms, limit)
+        return limit
+    return requested_ms
+
+
 class LaserManager:
     """Streams ShotPatterns at targets through a LaserCubeTransport."""
 
@@ -54,8 +72,9 @@ class LaserManager:
         self._transport = transport
         self._mapper = mapper                       # None → NORM is GALVO-norm
         self._pattern = pattern or get_shot_pattern()
-        self._dwell_ms = (dwell_ms if dwell_ms is not None
-                          else settings.SHOT_PATTERN_DWELL_MS)
+        self._dwell_ms = int(_dwell_cap_ms(
+            dwell_ms if dwell_ms is not None
+            else settings.SHOT_PATTERN_DWELL_MS, "shot pattern dwell"))
         self._power_pct = (power_pct if power_pct is not None
                            else settings.SHOT_PATTERN_POWER_PCT)
         self._dac_rate = (dac_rate if dac_rate is not None
@@ -176,6 +195,14 @@ class LaserManager:
         Returns a summary dict: fired, reason, chunks, reacquires.
         """
         cfg = config or ConeCollapseConfig.from_settings()
+        # The bzzt pulse is the shot's on-target dwell — the §10.2 safety
+        # ceiling applies to it like any other dwell.
+        capped_s = _dwell_cap_ms(cfg.bzzt_duration_s * 1000.0,
+                                 "cone bzzt pulse") / 1000.0
+        if capped_s != cfg.bzzt_duration_s:
+            cfg = dataclasses.replace(cfg, bzzt_duration_s=capped_s)
+            self._emit({"op": "dwell_clamped", "phase": "bzzt",
+                        "capped_ms": capped_s * 1000.0})
         if max_reacquires is None:
             max_reacquires = settings.CONE_MAX_REACQUIRES
         chunk_dt = cfg.chunk_size / cfg.dac_rate

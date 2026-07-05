@@ -25,6 +25,7 @@ import math
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -33,6 +34,7 @@ from config import settings                                        # noqa: E402
 from laser.laser_manager import LaserManager                       # noqa: E402
 from laser.lasercube import LaserCubeInterface                     # noqa: E402
 from laser.shot_patterns import ConeCollapseConfig, TrackerSnapshot  # noqa: E402
+from safety.moderator_guard import ModeratorGuard, open_moderator_guard  # noqa: E402
 
 _COORD_MAX = 0xFFF
 
@@ -235,6 +237,11 @@ def main(argv=None) -> int:
     parser.add_argument("--lead", type=float, help="cone-center pursuit gain")
     parser.add_argument("--breach", type=float, help="breach radius multiplier")
     parser.add_argument("--stretch-max", type=float, help="max oval stretch")
+    parser.add_argument("--no-moderator", action="store_true",
+                        help="run WITHOUT the Kinect/heartbeat safety "
+                             "moderator — bench-style: one-shot preflight + "
+                             "typed confirmation only, no software backstop "
+                             "if someone enters the beam path mid-pattern")
     args = parser.parse_args(argv)
     if args.mosquito_5s:
         args.trajectory = "mosquito5"
@@ -273,10 +280,17 @@ def main(argv=None) -> int:
         return 1
     print(f"\nconnected (src_ip={cube.src_ip})\n")
 
+    guard: Optional[ModeratorGuard] = None
     try:
         print("Pre-flight:")
         if not _preflight(cube):
             return 1
+
+        if not args.no_moderator:
+            guard = open_moderator_guard(cube)
+            if guard is None:
+                return 1
+
         if not _confirm("Fire one live cone-collapse pattern now?"):
             print("aborted by operator")
             return 0
@@ -302,8 +316,26 @@ def main(argv=None) -> int:
                       f"radius={chunk.current_radius_galvo:5.1f} "
                       f"stretch={chunk.stretch_factor:.2f}")
 
-        print("\nLASER ON — streaming cone-collapse pattern")
-        cube.enable_output()
+        if guard is not None:
+            guard.start()
+            guard.moderator.arm()
+            print("\nwaiting for the safety gate to open "
+                  "(Kinect frames + cube heartbeat)...")
+            if not guard.wait_safe():
+                v = guard.moderator.verdict()
+                print("FAIL: safety gate did not open: "
+                      + "; ".join(v.reasons))
+                return 1
+            # The moderator has already called enable_output on the SAFE
+            # transition — and will call disable_output the instant a
+            # person appears or the cube health degrades mid-pattern.
+            print("LASER ON (moderator gate open) — streaming pattern")
+        else:
+            print("\nWARNING: --no-moderator — no person check, no "
+                  "mid-pattern backstop. Physical range discipline only.")
+            print("LASER ON — streaming cone-collapse pattern")
+            cube.enable_output()
+
         summary = mgr.engage_cone(
             snapshot_fn, config=cfg, on_chunk=on_chunk,
             allow_reacquire=not args.no_reacquire,
@@ -314,6 +346,8 @@ def main(argv=None) -> int:
         print(f"reacqs : {summary['reacquires']}")
         return 0 if summary["fired"] else 1
     finally:
+        if guard is not None:
+            guard.stop()            # disarm → moderator drives disable_output
         cube.disable_output()
         cube.clear_ringbuffer()
         print("LASER OFF")

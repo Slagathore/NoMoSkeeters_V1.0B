@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 from config import settings                             # noqa: E402
 from laser.lasercube import LaserCubeInterface          # noqa: E402
 from laser.types import LaserPoint                      # noqa: E402
+from safety.moderator_guard import open_moderator_guard  # noqa: E402
 
 _CENTRE_DAC = 0x800          # ~galvo centre (2048 of 4095)
 _DWELL_SAMPLES = 3000        # ~0.1 s of scan at 30 kpps
@@ -64,6 +65,10 @@ def main(argv=None) -> int:
                         help="laser power 0-100 (keep LOW for first light)")
     parser.add_argument("--duration", type=float, default=5.0,
                         help="seconds to hold the test dot")
+    parser.add_argument("--no-moderator", action="store_true",
+                        help="run WITHOUT the Kinect/heartbeat safety "
+                             "moderator (bench-style: preflight + typed "
+                             "confirmation only)")
     args = parser.parse_args(argv)
     if args.power_pct > settings.SAFETY_MAX_POWER_PCT:
         print(f"note: --power-pct {args.power_pct}% clamped to "
@@ -81,10 +86,15 @@ def main(argv=None) -> int:
         return 1
     print(f"connected (src_ip={cube.src_ip})\n")
 
+    guard = None
     try:
         print("Pre-flight:")
         if not _preflight(cube):
             return 1
+        if not args.no_moderator:
+            guard = open_moderator_guard(cube)
+            if guard is None:
+                return 1
         print()
         if not _confirm(f"Emit a {args.power_pct}%-power dot for "
                         f"{args.duration:.0f}s?"):
@@ -95,13 +105,28 @@ def main(argv=None) -> int:
         dot = [LaserPoint(x=_CENTRE_DAC, y=_CENTRE_DAC, r=rgb, g=rgb, b=rgb)]
         dwell = dot * _DWELL_SAMPLES
 
-        print(f"\nLASER ON — {args.power_pct}% power at galvo centre")
-        cube.enable_output()
+        if guard is not None:
+            guard.start()
+            guard.moderator.arm()
+            print("\nwaiting for the safety gate to open...")
+            if not guard.wait_safe():
+                print("FAIL: safety gate did not open: "
+                      + "; ".join(guard.moderator.verdict().reasons))
+                return 1
+            print(f"LASER ON (moderator gate open) — {args.power_pct}% "
+                  f"power at galvo centre")
+        else:
+            print("\nWARNING: --no-moderator — no person check, no "
+                  "mid-dwell backstop.")
+            print(f"LASER ON — {args.power_pct}% power at galvo centre")
+            cube.enable_output()
         deadline = time.monotonic() + args.duration
         while time.monotonic() < deadline:
             cube.send_frame(dwell, frame_num=0)
             time.sleep(0.05)
     finally:
+        if guard is not None:
+            guard.stop()            # disarm → moderator drives disable_output
         cube.disable_output()
         print("LASER OFF")
         cube.disconnect()

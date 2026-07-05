@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NoMoSkeeters — session monitor</title>
+<style>
+  :root {
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-1: #1a1a19; --page: #0d0d0d;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+    }
+  }
+  /* ?theme=dark|light overrides the OS preference (also used for tests). */
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --series-1: #3987e5;
+  }
+  :root[data-theme="light"] {
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 20px; max-width: 1180px; margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+           margin-bottom: 16px; }
+  header h1 { font-size: 17px; font-weight: 650; }
+  #live { display: inline-flex; align-items: center; gap: 6px;
+          color: var(--ink-2); font-size: 12.5px; }
+  #live .dot { width: 8px; height: 8px; border-radius: 50%;
+               background: var(--muted); }
+  #live.on .dot { background: var(--good);
+                  animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  #session-pick { margin-left: auto; background: var(--surface-1);
+    color: var(--ink); border: 1px solid var(--ring); border-radius: 7px;
+    padding: 5px 8px; font: inherit; font-size: 12.5px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 10px; margin-bottom: 12px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--ring);
+          border-radius: 10px; padding: 12px 14px; }
+  .tile .k { font-size: 11.5px; color: var(--muted); letter-spacing: 0.02em;
+             text-transform: uppercase; }
+  .tile .v { font-size: 26px; font-weight: 650; margin-top: 2px; }
+  .tile .s { font-size: 11.5px; color: var(--ink-2); margin-top: 1px; }
+  .tile .v.safe { color: var(--good); }
+  .tile .v.unsafe { color: var(--critical); }
+
+  .card { background: var(--surface-1); border: 1px solid var(--ring);
+          border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .card h2 { font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+             margin-bottom: 10px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .row2 { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px;
+            font-size: 11.5px; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px;
+              display: inline-block; }
+
+  svg { display: block; width: 100%; }
+  svg text { fill: var(--muted); font: 10.5px system-ui, sans-serif; }
+
+  table { width: 100%; border-collapse: collapse;
+          font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 11px; color: var(--muted);
+       font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+       padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--grid);
+       font-size: 12.5px; color: var(--ink-2); }
+  td:first-child, th:first-child { padding-left: 0; }
+  tbody tr:hover { background: var(--ring); }
+  .empty { color: var(--muted); font-size: 12.5px; padding: 14px 0; }
+
+  #feed { max-height: 260px; overflow-y: auto; font-size: 12.5px; }
+  #feed div { padding: 3px 0; border-bottom: 1px solid var(--grid);
+              color: var(--ink-2); display: flex; gap: 10px; }
+  #feed time { color: var(--muted); font-variant-numeric: tabular-nums;
+               flex: 0 0 52px; }
+  #feed .st-safe    { color: var(--good); }
+  #feed .st-blocked { color: var(--critical); }
+  #feed .st-cooldown{ color: var(--warning); }
+
+  #tooltip { position: fixed; pointer-events: none; z-index: 10;
+    background: var(--surface-1); border: 1px solid var(--ring);
+    border-radius: 7px; padding: 6px 9px; font-size: 12px;
+    color: var(--ink); box-shadow: 0 3px 14px rgba(0,0,0,0.25);
+    display: none; max-width: 340px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NoMoSkeeters session monitor</h1>
+  <span id="live"><span class="dot"></span><span id="live-txt">connecting…</span></span>
+  <select id="session-pick"><option value="">auto (latest)</option></select>
+</header>
+
+<div class="tiles">
+  <div class="tile"><div class="k">Safety</div>
+    <div class="v" id="t-safety">—</div><div class="s" id="t-safety-sub"></div></div>
+  <div class="tile"><div class="k">Shots fired</div>
+    <div class="v" id="t-shots">0</div><div class="s" id="t-shots-sub"></div></div>
+  <div class="tile"><div class="k">Det → fire</div>
+    <div class="v" id="t-lat">—</div><div class="s" id="t-lat-sub"></div></div>
+  <div class="tile"><div class="k">Detections</div>
+    <div class="v" id="t-det">0</div><div class="s" id="t-det-sub"></div></div>
+  <div class="tile"><div class="k">Cube temp</div>
+    <div class="v" id="t-temp">—</div><div class="s" id="t-temp-sub"></div></div>
+  <div class="tile"><div class="k">Time safe</div>
+    <div class="v" id="t-safepct">—</div><div class="s" id="t-safepct-sub"></div></div>
+</div>
+
+<div class="card">
+  <h2>Safety state timeline</h2>
+  <div id="timeline"></div>
+  <div class="legend">
+    <span><i style="background:var(--good)"></i>SAFE</span>
+    <span><i style="background:var(--critical)"></i>BLOCKED</span>
+    <span><i style="background:var(--warning)"></i>COOLDOWN</span>
+    <span><i style="background:var(--muted)"></i>UNARMED</span>
+  </div>
+</div>
+
+<div class="row2">
+  <div class="card">
+    <h2>Cube temperature (°C)</h2>
+    <div id="tempchart"><div class="empty">no cube_status records yet</div></div>
+  </div>
+  <div class="card">
+    <h2>Shot log</h2>
+    <div id="shotlog"><div class="empty">no shots yet</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Event feed — state changes, notes, clamps</h2>
+  <div id="feed"><div class="empty">waiting for events…</div></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+"use strict";
+{
+  const th = new URLSearchParams(location.search).get("theme");
+  if (th === "dark" || th === "light") {
+    document.documentElement.dataset.theme = th;
+  }
+}
+const $ = id => document.getElementById(id);
+const tooltip = $("tooltip");
+const STATE_COLOR = { safe: "var(--good)", blocked: "var(--critical)",
+                      cooldown: "var(--warning)", unarmed: "var(--muted)" };
+
+// ── Session state ────────────────────────────────────────────────────────
+let session = null;          // current session name
+let offset = 0;              // byte offset into events.jsonl
+let pinned = "";             // "" = auto-follow latest
+let lastGrowth = 0;
+const S = freshState();
+
+function freshState() {
+  return { verdicts: [], shots: [], temps: [], feed: [],
+           detections: 0, latencies: [], lastVerdict: null, duration: 0,
+           meta: null, blockedShots: 0 };
+}
+
+function mmss(t) {
+  const m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// ── Ingest ───────────────────────────────────────────────────────────────
+function ingest(records) {
+  for (const r of records) {
+    const t = r.t_mono || 0;
+    S.duration = Math.max(S.duration, t);
+    const d = r.data || {};
+    if (r.op === "safety_verdict") {
+      const st = String(d.state || "").toLowerCase();
+      if (!S.lastVerdict || S.lastVerdict.state !== st) {
+        S.verdicts.push({ t, state: st, reasons: d.reasons || [] });
+        pushFeed(t, `safety → ${st.toUpperCase()}` +
+          (d.reasons && d.reasons.length ? ` — ${d.reasons.slice(0,2).join("; ")}` : ""),
+          `st-${st}`);
+      }
+      S.lastVerdict = { t, state: st };
+    } else if (r.op === "detection") {
+      S.detections += 1;
+    } else if (r.op === "track" && d.fired) {
+      if (typeof d.det_to_fire_ms === "number") S.latencies.push(d.det_to_fire_ms);
+      S.shots.push({ t, track: d.track_id, lat: d.det_to_fire_ms,
+                     area: d.target_area_mm2 });
+    } else if (r.op === "laser_event") {
+      const op = d.op || "";
+      if (op === "cube_status") {
+        S.temps.push({ t, c: d.temperature_c, buf: d.buffer_free,
+                       interlock: d.interlock, hot: d.over_temp });
+      } else if (op === "dwell_clamped") {
+        pushFeed(t, `dwell clamped to ${Math.round(d.capped_ms)}ms (${d.phase})`);
+      } else if (op.startsWith("cone_")) {
+        pushFeed(t, `${op} ${d.reason || ""}`);
+      }
+    } else if (r.op === "note") {
+      pushFeed(t, r.text || "");
+    } else if (r.op === "session_start") {
+      pushFeed(t, `session start (${r.tag || ""})`);
+    }
+  }
+}
+
+function pushFeed(t, text, cls) {
+  S.feed.push({ t, text, cls });
+  if (S.feed.length > 300) S.feed.splice(0, S.feed.length - 300);
+}
+
+// ── Render ───────────────────────────────────────────────────────────────
+function render() {
+  const last = S.lastVerdict;
+  const el = $("t-safety");
+  el.textContent = last ? last.state.toUpperCase() : "—";
+  el.className = "v " + (last && last.state === "safe" ? "safe"
+                         : last ? "unsafe" : "");
+  $("t-safety-sub").textContent = last ? `at ${mmss(last.t)}` : "";
+
+  $("t-shots").textContent = S.shots.length;
+  $("t-shots-sub").textContent = S.duration > 0
+      ? `${(S.shots.length / Math.max(S.duration, 1) * 60).toFixed(1)}/min` : "";
+
+  if (S.latencies.length) {
+    const mean = S.latencies.reduce((a, b) => a + b, 0) / S.latencies.length;
+    $("t-lat").textContent = `${Math.round(mean)}ms`;
+    $("t-lat-sub").textContent =
+      `max ${Math.round(Math.max(...S.latencies))}ms · n=${S.latencies.length}`;
+  }
+  $("t-det").textContent = S.detections;
+  $("t-det-sub").textContent = `${mmss(S.duration)} elapsed`;
+
+  const lastTemp = S.temps[S.temps.length - 1];
+  if (lastTemp) {
+    $("t-temp").textContent = `${lastTemp.c}°`;
+    $("t-temp-sub").textContent = lastTemp.hot ? "OVER-TEMP"
+        : (lastTemp.interlock ? "interlock ok" : "INTERLOCK OPEN");
+  }
+
+  // time-in-safe %
+  let safeT = 0;
+  for (let i = 0; i < S.verdicts.length; i++) {
+    const end = i + 1 < S.verdicts.length ? S.verdicts[i + 1].t : S.duration;
+    if (S.verdicts[i].state === "safe") safeT += end - S.verdicts[i].t;
+  }
+  $("t-safepct").textContent =
+      S.duration > 0 && S.verdicts.length ? `${(safeT / S.duration * 100).toFixed(0)}%` : "—";
+  $("t-safepct-sub").textContent =
+      S.verdicts.length ? `${S.verdicts.length} transition(s)` : "";
+
+  renderTimeline();
+  renderTemp();
+  renderShots();
+  renderFeed();
+}
+
+function renderTimeline() {
+  const W = 1040, H = 56, PB = 16;
+  const dur = Math.max(S.duration, 1);
+  let bands = "";
+  for (let i = 0; i < S.verdicts.length; i++) {
+    const v = S.verdicts[i];
+    const end = i + 1 < S.verdicts.length ? S.verdicts[i + 1].t : dur;
+    const x = v.t / dur * W, w = Math.max((end - v.t) / dur * W, 1.5);
+    const col = STATE_COLOR[v.state] || "var(--muted)";
+    bands += `<rect x="${x.toFixed(1)}" y="6" width="${w.toFixed(1)}"
+      height="${H - PB - 10}" rx="2" fill="${col}"
+      data-tip="${v.state.toUpperCase()} at ${mmss(v.t)}${v.reasons.length
+        ? " — " + esc(v.reasons.slice(0, 2).join("; ")) : ""}"></rect>`;
+  }
+  let ticks = "";
+  const step = niceStep(dur);
+  for (let t = 0; t <= dur; t += step) {
+    const x = Math.min(Math.max(t / dur * W, 16), W - 16);
+    ticks += `<text x="${x.toFixed(1)}" y="${H - 2}"
+      text-anchor="middle">${mmss(t)}</text>`;
+  }
+  $("timeline").innerHTML = S.verdicts.length
+    ? `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
+         style="height:${H}px">${bands}${ticks}</svg>`
+    : `<div class="empty">no safety verdicts yet</div>`;
+  hookTips($("timeline"));
+}
+
+function renderTemp() {
+  if (!S.temps.length) return;
+  const W = 500, H = 200, PL = 30, PB = 18, PT = 8;
+  const dur = Math.max(S.duration, 1);
+  const cs = S.temps.map(p => p.c);
+  const lo = Math.min(...cs) - 1, hi = Math.max(...cs) + 1;
+  const x = t => PL + t / dur * (W - PL - 6);
+  const y = c => PT + (1 - (c - lo) / (hi - lo)) * (H - PT - PB);
+  const pts = S.temps.map(p => `${x(p.t).toFixed(1)},${y(p.c).toFixed(1)}`);
+  let grid = "", labels = "";
+  for (const c of [lo + 1, (lo + hi) / 2, hi - 1]) {
+    grid += `<line x1="${PL}" x2="${W - 6}" y1="${y(c).toFixed(1)}"
+      y2="${y(c).toFixed(1)}" stroke="var(--grid)" stroke-width="1"></line>`;
+    labels += `<text x="${PL - 5}" y="${(y(c) + 3.5).toFixed(1)}"
+      text-anchor="end">${Math.round(c)}</text>`;
+  }
+  const dots = S.temps.map((p, i) =>
+    `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.c).toFixed(1)}" r="7"
+       fill="transparent" data-tip="${p.c}°C at ${mmss(p.t)} · buffer ${p.buf}"
+       ></circle>`).join("");
+  $("tempchart").innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" style="height:${H}px">
+       ${grid}${labels}
+       <polyline points="${pts.join(" ")}" fill="none"
+         stroke="var(--series-1)" stroke-width="2"
+         stroke-linejoin="round"></polyline>
+       ${dots}
+       <text x="${W - 6}" y="${H - 4}" text-anchor="end">${mmss(dur)}</text>
+     </svg>`;
+  hookTips($("tempchart"));
+}
+
+function renderShots() {
+  if (!S.shots.length) return;
+  const rows = S.shots.slice(-40).reverse().map(s => `<tr>
+      <td>${mmss(s.t)}</td><td>t${s.track}</td>
+      <td>${s.lat != null ? Math.round(s.lat) + " ms" : "—"}</td>
+      <td>${s.area != null ? s.area.toFixed(0) + " mm²" : "—"}</td>
+    </tr>`).join("");
+  $("shotlog").innerHTML = `<table>
+    <thead><tr><th>t</th><th>track</th><th>det→fire</th><th>est. size</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+function renderFeed() {
+  if (!S.feed.length) return;
+  $("feed").innerHTML = S.feed.slice(-200).reverse().map(f =>
+    `<div><time>${mmss(f.t)}</time><span class="${f.cls || ""}">${esc(f.text)}</span></div>`
+  ).join("");
+}
+
+function niceStep(dur) {
+  for (const s of [5, 10, 30, 60, 120, 300, 600, 1800]) {
+    if (dur / s <= 10) return s;
+  }
+  return 3600;
+}
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                  .replace(/"/g, "&quot;");
+}
+function hookTips(root) {
+  root.querySelectorAll("[data-tip]").forEach(el => {
+    el.addEventListener("mousemove", e => {
+      tooltip.textContent = el.getAttribute("data-tip");
+      tooltip.style.display = "block";
+      tooltip.style.left = Math.min(e.clientX + 12, innerWidth - 300) + "px";
+      tooltip.style.top = (e.clientY + 14) + "px";
+    });
+    el.addEventListener("mouseleave", () => tooltip.style.display = "none");
+  });
+}
+
+// ── Polling ──────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const qs = new URLSearchParams({ offset: String(offset) });
+    if (pinned) qs.set("session", pinned);
+    const res = await fetch("/api/events?" + qs);
+    if (!res.ok) throw new Error(res.status);
+    const body = await res.json();
+    if (body.session !== session) {          // new/switched session — reset
+      session = body.session;
+      offset = 0;
+      Object.assign(S, freshState());
+      document.title = `${session} — NoMoSkeeters monitor`;
+      if (body.offset !== undefined && offset === 0 && body.records.length === 0) {
+        // fresh fetch will come next tick from offset 0
+      }
+    }
+    if (body.records.length) {
+      ingest(body.records);
+      lastGrowth = Date.now();
+      render();
+    }
+    offset = body.offset;
+    S.meta = body.meta;
+    const live = $("live");
+    if (body.meta && body.meta.ended_utc) {
+      live.classList.remove("on");
+      $("live-txt").textContent = `${session} · closed`;
+    } else if (Date.now() - lastGrowth < 4000) {
+      live.classList.add("on");
+      $("live-txt").textContent = `${session} · live`;
+    } else {
+      live.classList.remove("on");
+      $("live-txt").textContent = `${session} · idle`;
+    }
+  } catch (e) {
+    $("live-txt").textContent = "server unreachable";
+    $("live").classList.remove("on");
+  }
+  setTimeout(poll, 1000);
+}
+
+async function refreshSessions() {
+  try {
+    const res = await fetch("/api/sessions");
+    const body = await res.json();
+    const pick = $("session-pick");
+    const cur = pick.value;
+    pick.innerHTML = `<option value="">auto (latest)</option>` +
+      body.sessions.map(s =>
+        `<option value="${esc(s.name)}">${esc(s.name)}${s.closed ? "" : " ●"}</option>`
+      ).join("");
+    pick.value = cur;
+  } catch (e) { /* ignore */ }
+  setTimeout(refreshSessions, 5000);
+}
+$("session-pick").addEventListener("change", e => {
+  pinned = e.target.value;
+  session = null;                            // force reset on next poll
+  offset = 0;
+});
+
+poll();
+refreshSessions();
+</script>
+</body>
+</html>
