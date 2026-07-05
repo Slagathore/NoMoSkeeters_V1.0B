@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from config import settings                             # noqa: E402
 from laser.lasercube import LaserCubeInterface          # noqa: E402
 from laser.types import LaserPoint                      # noqa: E402
 
@@ -64,6 +65,10 @@ def main(argv=None) -> int:
     parser.add_argument("--duration", type=float, default=5.0,
                         help="seconds to hold the test dot")
     args = parser.parse_args(argv)
+    if args.power_pct > settings.SAFETY_MAX_POWER_PCT:
+        print(f"note: --power-pct {args.power_pct}% clamped to "
+              f"SAFETY_MAX_POWER_PCT={settings.SAFETY_MAX_POWER_PCT}%")
+        args.power_pct = int(settings.SAFETY_MAX_POWER_PCT)
 
     print("=" * 60)
     print("  Step 11a — LaserCube FIRST LIGHT")

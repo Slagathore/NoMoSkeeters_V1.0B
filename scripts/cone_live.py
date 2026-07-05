@@ -29,6 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from config import settings                                        # noqa: E402
 from laser.laser_manager import LaserManager                       # noqa: E402
 from laser.lasercube import LaserCubeInterface                     # noqa: E402
 from laser.shot_patterns import ConeCollapseConfig, TrackerSnapshot  # noqa: E402
@@ -237,6 +238,15 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.mosquito_5s:
         args.trajectory = "mosquito5"
+
+    # Hard ceiling from settings — operator args cannot exceed it.
+    max_pct = float(settings.SAFETY_MAX_POWER_PCT)
+    for name in ("power_pct", "bzzt_power_pct"):
+        if getattr(args, name) > max_pct:
+            print(f"note: --{name.replace('_', '-')} "
+                  f"{getattr(args, name):.0f}% clamped to "
+                  f"SAFETY_MAX_POWER_PCT={max_pct:.0f}%")
+            setattr(args, name, max_pct)
 
     cfg = _build_config(args)
     x0 = _norm_to_galvo(args.x)

@@ -39,10 +39,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import cv2                                                       # noqa: E402
-import numpy as np                                               # noqa: E402
 
 from config import settings                                       # noqa: E402
 from detection.detector import Detector                           # noqa: E402
+from monitoring.hud import FpsMeter, draw_hud                      # noqa: E402
 from safety.kinect_safety_check import KinectSafetyCheck          # noqa: E402
 from safety.person_detector import HOGPersonDetector              # noqa: E402
 from safety.safety_moderator import (                             # noqa: E402
@@ -140,6 +140,9 @@ def main(argv=None) -> int:
         stale_after_s=settings.SAFETY_MODERATOR_STALE_AFTER_S,
         safe_cooldown_s=settings.SAFETY_MODERATOR_COOLDOWN_S,
         require_explicit_arm=not args.no_arm_prompt,
+        # Spotter mode never opens the cube — a check-less moderator only
+        # affects the viable-shot counter, so it is allowed here.
+        allow_no_checks=True,
     )
     if kinect is not None and settings.SAFETY_KINECT_DEPTH_CHECK_ENABLED:
         depth_chk = KinectSafetyCheck(
@@ -196,6 +199,7 @@ def main(argv=None) -> int:
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
     t_start = time.monotonic()
+    fps_meter = FpsMeter()
     try:
         while True:
             frame = ov.read()
@@ -204,15 +208,15 @@ def main(argv=None) -> int:
                     break
                 continue
 
-            # Feed Kinect frames via the manager's worker -> moderator.on_frame.
-            # (We also pull the latest Kinect frame here for visualization.)
+            # The SensorManager worker keeps the latest Kinect frame; we
+            # poll it here and push it to the moderator directly (this
+            # script doesn't use the manager's frame sink). Depth-less
+            # polls are skipped — staleness still closes the gate if the
+            # depth stream stays quiet (same convention as
+            # live_fire_session.py).
             kinect_frame = (manager.latest_frame("kinect_v2")
                             if kinect is not None else None)
-
-            # Manually push Kinect frame into moderator if SensorManager isn't
-            # wired with a sink — the kinect worker stores latest but our
-            # moderator subscription is direct.
-            if kinect_frame is not None:
+            if kinect_frame is not None and kinect_frame.depth is not None:
                 moderator.on_frame(kinect_frame)
 
             # If HOG is enabled, run it on the OV9281 frame as a synthetic
@@ -269,8 +273,13 @@ def main(argv=None) -> int:
             # Render the preview window.
             if not args.no_window:
                 vis = frame.rgb.copy()
-                _draw_overlay(vis, tracks, counters, verdict, args.fov_margin,
-                              kinect_secondary=kinect_n)
+                draw_hud(vis, tracks=tracks, verdict=verdict,
+                         fov_margin=args.fov_margin,
+                         stats=[("VIABLE", counters.viable_shots),
+                                ("DET", counters.detections),
+                                ("TRK", counters.confirmed_tracks),
+                                ("K2", kinect_n)],
+                         fps=fps_meter.tick(t_now))
                 cv2.imshow(win, vis)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord('q')):
@@ -299,41 +308,6 @@ def main(argv=None) -> int:
         for tid, n in top:
             print(f"    track {tid}: {n} viable")
     return 0
-
-
-def _draw_overlay(img, tracks, counters, verdict, fov_margin,
-                  kinect_secondary: int) -> None:
-    h, w = img.shape[:2]
-
-    # FOV margin rectangle.
-    x0 = int(fov_margin * w)
-    y0 = int(fov_margin * h)
-    x1 = int((1.0 - fov_margin) * w)
-    y1 = int((1.0 - fov_margin) * h)
-    cv2.rectangle(img, (x0, y0), (x1, y1), (80, 200, 80), 1)
-
-    # Tracks.
-    for t in tracks:
-        x_n, y_n = float(t.state[0]), float(t.state[1])
-        cx, cy = int(x_n * (w - 1)), int(y_n * (h - 1))
-        col = (0, 255, 0) if t.fire_eligible else (0, 165, 255)
-        cv2.circle(img, (cx, cy), 6, col, 1)
-        cv2.putText(img, f"t{t.track_id}", (cx + 8, cy - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1)
-
-    # Banner with counters + safety verdict.
-    safe_col = (0, 200, 0) if verdict.safe else (0, 0, 255)
-    cv2.rectangle(img, (0, 0), (w, 60), (32, 32, 32), -1)
-    cv2.putText(img,
-                f"VIABLE {counters.viable_shots}   "
-                f"DET {counters.detections}   "
-                f"TRK {counters.confirmed_tracks}   "
-                f"K2 {kinect_secondary}",
-                (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    state = verdict.state.value.upper()
-    reasons = "; ".join(verdict.reasons[:2])
-    cv2.putText(img, f"SAFETY: {state}   {reasons}",
-                (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, safe_col, 1)
 
 
 if __name__ == "__main__":

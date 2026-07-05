@@ -92,11 +92,18 @@ class SafetyModerator:
                  stale_after_s: float = 0.5,
                  safe_cooldown_s: float = 1.0,
                  require_explicit_arm: bool = True,
+                 allow_no_checks: bool = False,
                  now_fn: _Now = time.monotonic):
         self._checks: dict[str, list[SafetyCheck]] = {}
         self._stale_after_s = max(0.01, stale_after_s)
+        self._stale_after_overrides: dict[str, float] = {}
         self._safe_cooldown_s = max(0.0, safe_cooldown_s)
         self._require_arm = require_explicit_arm
+        # A moderator with zero registered checks holds the gate closed —
+        # arming with no automated person check is exactly the hole this
+        # class exists to plug. Laser-free callers (spotter mode, dry-fire
+        # smoke tests) may opt out with allow_no_checks=True.
+        self._allow_no_checks = allow_no_checks
         self._now = now_fn
 
         # Operator arm switch.
@@ -123,14 +130,27 @@ class SafetyModerator:
 
     # ── Configuration ────────────────────────────────────────────────────
 
-    def add_check(self, sensor_id: str, check: SafetyCheck) -> None:
-        """Register a check tied to one SAFETY-role sensor."""
+    def add_check(self, sensor_id: str, check: SafetyCheck, *,
+                  stale_after_s: Optional[float] = None) -> None:
+        """Register a check tied to one SAFETY-role sensor.
+
+        `stale_after_s` overrides the moderator-wide staleness limit for
+        this sensor only — use it for slow-cadence sources (e.g. the cube
+        heartbeat at 1.5s) that would otherwise always read as stale
+        against the camera-rate default."""
         self._checks.setdefault(sensor_id, []).append(check)
+        if stale_after_s is not None:
+            self._stale_after_overrides[sensor_id] = max(0.01, stale_after_s)
         # A sensor that hasn't produced a frame yet is treated as stale —
         # the gate is closed until the first frame proves the sensor is
         # alive. Seed an entry so stale-detection sees it.
         self._last_frame_ts.setdefault(sensor_id, 0.0)
         self._check_results.setdefault(sensor_id, [])
+
+    @property
+    def has_checks(self) -> bool:
+        """True when at least one safety check is registered."""
+        return bool(self._checks)
 
     def set_output_callbacks(self,
                               enable: Optional[Callable[[], bool]],
@@ -238,14 +258,21 @@ class SafetyModerator:
             reasons.append("unarmed")
             all_ok = False
 
+        # Zero registered checks keeps the gate closed unless the caller
+        # explicitly opted out (laser-free contexts only).
+        if not self._checks and not self._allow_no_checks:
+            reasons.append("no safety checks registered")
+            all_ok = False
+
         # Stale-sensor detection: any registered SAFETY sensor whose last
-        # frame is older than stale_after_s closes the gate.
+        # frame is older than its staleness limit closes the gate.
         for sid in self._checks:
             last = self._last_frame_ts.get(sid, 0.0)
+            limit = self._stale_after_overrides.get(sid, self._stale_after_s)
             if last <= 0.0:
                 reasons.append(f"{sid}: no frames yet")
                 all_ok = False
-            elif (now - last) > self._stale_after_s:
+            elif (now - last) > limit:
                 age_ms = (now - last) * 1000.0
                 reasons.append(f"{sid}: stale ({age_ms:.0f}ms)")
                 all_ok = False
@@ -387,6 +414,28 @@ def make_kinect_person_check(check) -> SafetyCheck:
             return False, "depth empty"
         if check.is_person_present(depth):
             return False, "person detected in safety volume"
+        return True, ""
+    return _check
+
+
+def make_cube_health_check(status_source) -> SafetyCheck:
+    """Wrap a cube status source (anything with a `.last_info` returning a
+    `LaserInfo` or None — in practice `laser.heartbeat.CubeHeartbeat`) into
+    a SafetyCheck.
+
+    The frame that triggers the check is just a liveness tick; the actual
+    health data comes from `status_source.last_info`. Unsafe when the
+    interlock is open or the cube reports over-temperature. No cube status
+    yet is unsafe-fail — same doctrine as a safety sensor with no frames.
+    Duck-typed so this module stays free of laser imports."""
+    def _check(frame: SensorFrame) -> tuple[bool, str]:
+        info = status_source.last_info
+        if info is None:
+            return False, "no cube status yet"
+        if not info.interlock:
+            return False, "cube interlock open"
+        if info.over_temp:
+            return False, "cube over-temperature"
         return True, ""
     return _check
 

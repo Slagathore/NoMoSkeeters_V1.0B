@@ -36,13 +36,16 @@ import cv2                                                       # noqa: E402
 
 from config import settings                                       # noqa: E402
 from detection.detector import Detector                           # noqa: E402
+from laser.heartbeat import CubeHeartbeat                          # noqa: E402
 from laser.laser_manager import LaserManager                      # noqa: E402
 from laser.lasercube import LaserCubeInterface                    # noqa: E402
+from monitoring.hud import FpsMeter, draw_hud                      # noqa: E402
 from monitoring.session_recorder import SessionRecorder            # noqa: E402
 from safety.kinect_safety_check import KinectSafetyCheck          # noqa: E402
 from safety.person_detector import HOGPersonDetector              # noqa: E402
 from safety.safety_moderator import (                             # noqa: E402
-    SafetyModerator, make_kinect_person_check, make_person_detector_check,
+    SafetyModerator, make_cube_health_check, make_kinect_person_check,
+    make_person_detector_check,
 )
 from safety.voice_warning import VoiceWarning                     # noqa: E402
 from sensors.base import SensorFrame, SensorRole                  # noqa: E402
@@ -182,6 +185,9 @@ def main(argv=None) -> int:                                  # noqa: C901
         stale_after_s=settings.SAFETY_MODERATOR_STALE_AFTER_S,
         safe_cooldown_s=settings.SAFETY_MODERATOR_COOLDOWN_S,
         require_explicit_arm=True,
+        # Dry-fire opens no cube, so a check-less moderator is harmless
+        # there; a live session with zero checks is refused below.
+        allow_no_checks=args.dry_fire,
     )
     if cube is not None:
         moderator.set_output_callbacks(
@@ -211,6 +217,48 @@ def main(argv=None) -> int:                                  # noqa: C901
                             make_person_detector_check(hog))
         print("  safety: HOG on OV9281 ENABLED")
 
+    # A live session must have at least one automated person check. The
+    # cube-health check below doesn't count — it watches the laser, not
+    # the room.
+    if not args.dry_fire and not moderator.has_checks:
+        print("FAIL: no person check registered (Kinect unavailable/"
+              "disabled and HOG disabled). Refusing to arm a live session "
+              "with no automated human-presence check — use --dry-fire "
+              "for sensor-less smoke tests.")
+        ov.close()
+        if kinect is not None:
+            kinect.close()
+        if cube is not None:
+            cube.disconnect()
+        return 1
+
+    # Cube health: a heartbeat thread pings GET_FULL_INFO on a fixed
+    # cadence (BOOTSTRAP_AMENDMENTS §9.10 — also keeps the cube's 4s
+    # comms timer alive between shots) and feeds interlock/over-temp
+    # into the moderator as a SAFETY check. The staleness override lets
+    # one 1.5s beat go missing; two missed beats close the gate.
+    heartbeat: Optional[CubeHeartbeat] = None
+    recorder: Optional[SessionRecorder] = None
+    if cube is not None:
+        def _on_cube_status(info) -> None:
+            tick = SensorFrame(timestamp=time.time(), sensor_id="lasercube",
+                               sensor_role=SensorRole.SAFETY.value)
+            moderator.on_frame(tick)
+            if recorder is not None:
+                recorder.record_event({
+                    "op": "cube_status",
+                    "interlock": info.interlock,
+                    "over_temp": info.over_temp,
+                    "temp_warn": info.temp_warn,
+                    "temperature_c": info.temperature_c,
+                    "output_enabled": info.output_enabled,
+                    "buffer_free": info.buffer_free,
+                })
+        heartbeat = CubeHeartbeat(cube, on_status=_on_cube_status)
+        moderator.add_check("lasercube", make_cube_health_check(heartbeat),
+                            stale_after_s=3.5)
+        print("  safety: cube interlock/over-temp heartbeat ENABLED")
+
     print("\nOperator checklist:")
     print("  - safety lens fitted on aperture")
     print("  - eye protection on for everyone in the room")
@@ -233,6 +281,8 @@ def main(argv=None) -> int:                                  # noqa: C901
     if recorder.path is not None:
         print(f"  session log: {recorder.path}")
     moderator.set_verdict_sink(recorder.record_verdict)
+    if heartbeat is not None:
+        heartbeat.start()
 
     detector = Detector()
     kinect_detector = Detector() if kinect is not None else None
@@ -271,6 +321,8 @@ def main(argv=None) -> int:                                  # noqa: C901
     last_any_fire = 0.0
     min_fire_interval = 1.0 / MAX_SHOT_RATE_HZ
     t_start = time.monotonic()
+    fps_meter = FpsMeter()
+    last_shot: Optional[tuple[float, float, float]] = None  # (t, x_n, y_n)
 
     try:
         while True:
@@ -294,6 +346,8 @@ def main(argv=None) -> int:                                  # noqa: C901
                                          sensor_id=ov.sensor_id,
                                          timestamp=now)
             counters.detections += len(dets)
+            for d in dets:
+                recorder.record_detection(d)
             tracks = tracker.update(dets, now)
             for d in dets:
                 fusion.ingest_detection(d)
@@ -337,9 +391,26 @@ def main(argv=None) -> int:                                  # noqa: C901
                 if now - last_any_fire < min_fire_interval:
                     counters.shots_blocked_cooldown += 1
                     continue
+                # Re-poll the gate immediately before each shot — the
+                # frame-level verdict above can be stale by now (moderator
+                # contract: a burst must poll between shots).
+                if not moderator.is_safe_to_fire():
+                    counters.shots_blocked_safety += 1
+                    continue
                 last_track_fire[t.track_id] = now
                 last_any_fire = now
                 counters.shots_fired += 1
+                det = getattr(t, "last_detection", None)
+                recorder.record_track({
+                    "track_id": t.track_id,
+                    "detection_id": (det.detection_id
+                                     if det is not None else None),
+                    "det_to_fire_ms": (now - t.last_update_ts) * 1000.0,
+                    "x_norm": x_n,
+                    "y_norm": y_n,
+                    "fired": True,
+                })
+                last_shot = (time.monotonic(), x_n, y_n)
                 if laser_mgr is not None:
                     laser_mgr.engage_track(t)
                 else:
@@ -348,8 +419,19 @@ def main(argv=None) -> int:                                  # noqa: C901
 
             if not args.no_window:
                 vis = frame.rgb.copy()
-                _draw_session_hud(vis, tracks, counters, verdict,
-                                  args.fov_margin)
+                flash = None
+                if last_shot is not None:
+                    flash = (last_shot[0],
+                             (int(last_shot[1] * (vis.shape[1] - 1)),
+                              int(last_shot[2] * (vis.shape[0] - 1))))
+                draw_hud(vis, tracks=tracks, verdict=verdict,
+                         fov_margin=args.fov_margin,
+                         stats=[("FIRED", counters.shots_fired),
+                                ("DET", counters.detections),
+                                ("TRK", counters.confirmed_tracks)],
+                         fps=fps_meter.tick(now),
+                         lag_ms=settings.LATENCY_SOFTWARE_LAG_MS,
+                         flash=flash)
                 cv2.imshow(win, vis)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord('q')):
@@ -361,6 +443,8 @@ def main(argv=None) -> int:                                  # noqa: C901
         stop.set()
         # Order matters: disarm before cube.disconnect to drive disable_output.
         moderator.disarm()
+        if heartbeat is not None:
+            heartbeat.stop()
         if cube is not None:
             try:
                 cube.disable_output()
@@ -385,33 +469,6 @@ def main(argv=None) -> int:                                  # noqa: C901
     print(f"  blocked outside FOV : {counters.shots_blocked_fov}")
     print(f"  blocked by cooldown : {counters.shots_blocked_cooldown}")
     return 0
-
-
-def _draw_session_hud(img, tracks, counters, verdict, fov_margin) -> None:
-    h, w = img.shape[:2]
-    x0 = int(fov_margin * w); y0 = int(fov_margin * h)
-    x1 = int((1.0 - fov_margin) * w); y1 = int((1.0 - fov_margin) * h)
-    cv2.rectangle(img, (x0, y0), (x1, y1), (80, 200, 80), 1)
-
-    for t in tracks:
-        x_n, y_n = float(t.state[0]), float(t.state[1])
-        cx, cy = int(x_n * (w - 1)), int(y_n * (h - 1))
-        col = (0, 255, 0) if t.fire_eligible else (0, 165, 255)
-        cv2.circle(img, (cx, cy), 6, col, 1)
-        cv2.putText(img, f"t{t.track_id}", (cx + 8, cy - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1)
-
-    safe_col = (0, 200, 0) if verdict.safe else (0, 0, 255)
-    cv2.rectangle(img, (0, 0), (w, 60), (32, 32, 32), -1)
-    cv2.putText(img,
-                f"FIRED {counters.shots_fired}   "
-                f"DET {counters.detections}   "
-                f"TRK {counters.confirmed_tracks}",
-                (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    state = verdict.state.value.upper()
-    reasons = "; ".join(verdict.reasons[:2])
-    cv2.putText(img, f"SAFETY: {state}   {reasons}",
-                (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.45, safe_col, 1)
 
 
 if __name__ == "__main__":

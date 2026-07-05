@@ -47,13 +47,103 @@ def test_unarmed_is_unsafe_by_default() -> None:
     assert v.state == SafetyState.UNARMED
 
 
-def test_arming_without_checks_goes_safe_when_no_checks_registered() -> None:
+def test_arming_with_zero_checks_stays_blocked_by_default() -> None:
     clk = FakeClock()
     mod = SafetyModerator(now_fn=clk, safe_cooldown_s=0.0)
     v = mod.arm()
-    # No checks registered = no SAFETY sensors required = safe after arming.
+    # A moderator with no registered checks must NOT open the gate — a
+    # live session with zero automated person checks is the exact hole
+    # this class exists to plug.
+    assert not v.safe
+    assert any("no safety checks registered" in r for r in v.reasons)
+
+
+def test_allow_no_checks_opt_out_arms_safe() -> None:
+    clk = FakeClock()
+    mod = SafetyModerator(now_fn=clk, safe_cooldown_s=0.0,
+                          allow_no_checks=True)
+    v = mod.arm()
+    # Laser-free callers (spotter mode, dry-fire) may opt out explicitly.
     assert v.safe
     assert v.state == SafetyState.SAFE
+
+
+def test_has_checks_property() -> None:
+    mod = SafetyModerator(now_fn=FakeClock())
+    assert not mod.has_checks
+    mod.add_check("kinect_v2", lambda f: (True, ""))
+    assert mod.has_checks
+
+
+def test_per_check_stale_override_tolerates_slow_cadence() -> None:
+    clk = FakeClock()
+    mod = SafetyModerator(now_fn=clk, safe_cooldown_s=0.0,
+                          stale_after_s=0.5)
+    # A slow source (e.g. the 1.5s cube heartbeat) gets its own limit.
+    mod.add_check("lasercube", lambda f: (True, ""), stale_after_s=3.5)
+    mod.arm()
+    mod.on_frame(_frame("lasercube"))
+    clk.advance(2.0)   # would be stale at the 0.5s default
+    assert mod.verdict().safe
+    clk.advance(2.0)   # 4.0s total > 3.5s override → stale, gate closes
+    v = mod.verdict()
+    assert not v.safe
+    assert any("stale" in r for r in v.reasons)
+
+
+class _FakeStatusSource:
+    """Duck-typed stand-in for laser.heartbeat.CubeHeartbeat."""
+
+    def __init__(self) -> None:
+        self.last_info: _FakeInfo | None = None
+
+
+class _FakeInfo:
+    def __init__(self, *, interlock: bool, over_temp: bool) -> None:
+        self.interlock = interlock
+        self.over_temp = over_temp
+
+
+def test_cube_health_check_verdicts() -> None:
+    from safety.safety_moderator import make_cube_health_check
+    src = _FakeStatusSource()
+    check = make_cube_health_check(src)
+    tick = _frame("lasercube")
+
+    ok, reason = check(tick)
+    assert not ok and "no cube status" in reason
+
+    src.last_info = _FakeInfo(interlock=False, over_temp=False)
+    ok, reason = check(tick)
+    assert not ok and "interlock" in reason
+
+    src.last_info = _FakeInfo(interlock=True, over_temp=True)
+    ok, reason = check(tick)
+    assert not ok and "over-temperature" in reason
+
+    src.last_info = _FakeInfo(interlock=True, over_temp=False)
+    ok, reason = check(tick)
+    assert ok and reason == ""
+
+
+def test_cube_health_check_gates_the_moderator() -> None:
+    from safety.safety_moderator import make_cube_health_check
+    clk = FakeClock()
+    src = _FakeStatusSource()
+    src.last_info = _FakeInfo(interlock=True, over_temp=False)
+    mod = SafetyModerator(now_fn=clk, safe_cooldown_s=0.0)
+    mod.add_check("lasercube", make_cube_health_check(src),
+                  stale_after_s=3.5)
+    mod.arm()
+    mod.on_frame(_frame("lasercube"))
+    assert mod.verdict().safe
+
+    # Interlock opens mid-session → next heartbeat tick closes the gate.
+    src.last_info = _FakeInfo(interlock=False, over_temp=False)
+    mod.on_frame(_frame("lasercube"))
+    v = mod.verdict()
+    assert not v.safe
+    assert any("interlock" in r for r in v.reasons)
 
 
 def test_safety_sensor_without_frames_keeps_gate_closed() -> None:

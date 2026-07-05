@@ -48,3 +48,6 @@ desktop.ini
 
 # Demo / tuning output (scripts/cone_demo.py).
 cone_demo_out/
+
+# Fusion skill local state (SQLite)
+.fusion/

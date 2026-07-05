@@ -327,8 +327,11 @@ class PhoneFrameDecoder:
     def _recv_packet(self) -> Optional[FramePacket]:
         """Receive one datagram (one chunk); return a fully reassembled frame
         once its last chunk arrives, else None."""
+        sock = self._sock
+        if sock is None:                # closed under us during shutdown
+            return None
         try:
-            data, _ = self._sock.recvfrom(2_000_000)   # type: ignore[union-attr]
+            data, _ = sock.recvfrom(2_000_000)
         except socket.timeout:
             return None
         except (ConnectionResetError, OSError):

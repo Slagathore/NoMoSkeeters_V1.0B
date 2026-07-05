@@ -4,7 +4,7 @@ Reads a SessionRecorder log and prints a human-readable summary:
   • event counts by op
   • safety verdict timeline (state changes only)
   • shot tally with per-track stats
-  • basic latency between detection and shoot, when matchable
+  • detection→fire latency (from the per-shot track records)
 
 Use after a live session to audit what happened:
 
@@ -57,18 +57,14 @@ def summarise(records: list[dict]) -> dict:
     per_track: dict = collections.Counter(
         s["data"].get("track_id", "?") for s in shoots)
 
-    # Detection → shoot deltas, when both reference the same track id.
-    det_times: dict = {}
-    deltas: list[float] = []
-    for r in records:
-        if r.get("op") == "detection":
-            tid = r["data"].get("detection_id")
-            if tid is not None:
-                det_times.setdefault(tid, []).append(r.get("t_mono", 0.0))
-        if r.get("op") == "laser_event" and r["data"].get("op") == "shoot":
-            tid = r["data"].get("track_id")
-            if tid in det_times and det_times[tid]:
-                deltas.append(r.get("t_mono", 0.0) - det_times[tid].pop(0))
+    # Detection → fire latency: live_fire_session records a "track" record
+    # per shot carrying det_to_fire_ms (last detection age at the moment
+    # the fire decision was made — single time base, no cross-record
+    # matching needed).
+    det_to_fire_ms = [r["data"]["det_to_fire_ms"] for r in records
+                      if r.get("op") == "track"
+                      and isinstance(r.get("data"), dict)
+                      and r["data"].get("det_to_fire_ms") is not None]
 
     return {
         "n_records": len(records),
@@ -77,7 +73,7 @@ def summarise(records: list[dict]) -> dict:
         "transitions": transitions,
         "shoots": len(shoots),
         "per_track": dict(per_track),
-        "det_to_shoot_deltas_s": deltas,
+        "det_to_fire_ms": det_to_fire_ms,
     }
 
 
@@ -101,10 +97,11 @@ def _print_report(report: dict) -> None:
         for tid, n in sorted(report["per_track"].items(),
                               key=lambda kv: -kv[1]):
             print(f"    track {tid}: {n} shot(s)")
-    if report["det_to_shoot_deltas_s"]:
-        deltas = report["det_to_shoot_deltas_s"]
-        mean = sum(deltas) / len(deltas) * 1000.0
-        print(f"  det->shoot   : mean {mean:.0f} ms over {len(deltas)} pairs")
+    if report["det_to_fire_ms"]:
+        ms = report["det_to_fire_ms"]
+        mean = sum(ms) / len(ms)
+        print(f"  det->fire    : mean {mean:.0f} ms over {len(ms)} shot(s) "
+              f"(max {max(ms):.0f} ms)")
 
 
 def main(argv=None) -> int:

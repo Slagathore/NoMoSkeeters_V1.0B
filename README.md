@@ -18,19 +18,25 @@ invented by an earlier coding pass working from memory. v2 exists to replace
 it with a protocol verified against the manufacturer source
 (`Wickedlasers/libLaserdockCore`) and cross-checked against real hardware.
 
-Steps 0–11 of the amended implementation order are built and tested; the
-LaserCube control path and the GoPro video feed are both verified on real
-hardware. ~190 tests pass offline. Remaining work is mostly empirical —
-bench calibration, the GUI, and the web monitor.
+Steps 0–12 of the amended implementation order are built and tested; the
+LaserCube control path, the OV9281/GoPro/phone video feeds, and the safety
+subsystem are verified on real hardware. ~340 tests pass offline. Remaining
+work is mostly empirical — bench calibration at distance, the GUI, and the
+web monitor.
 
 ## Hardware & network reference
 
 | Device | Connection | Notes |
 |---|---|---|
 | WiFi LaserCube 2.5W (FW 0.23) | Direct Ethernet (APIPA) | Laser output + galvo |
-| Phone (OnePlus 15) | TCP+UDP (NoMoSkeeters Sensor Protocol v1) | **Primary targeting camera** — replaces GoPro |
+| OV9281 global-shutter camera | USB (DSHOW) | **Primary targeting camera** — 188fps @ 640×480 verified |
+| Phone (OnePlus 15) | TCP+UDP (NoMoSkeeters Sensor Protocol v1) | Secondary targeting / context |
 | GoPro Hero 13 Black | USB-tethered | Legacy targeting (kept for comparison + fallback) |
 | Kinect v2 | USB (+ Kinect SDK) | Safety / 3D scene |
+
+Sensor roles and physical placement rationale: [CAMERA_PLACEMENT.md](CAMERA_PLACEMENT.md)
+— the OV9281 is the only camera fast enough to target a moving mosquito at
+close range; everything else supplements it or supplies context.
 
 ### LaserCube
 
@@ -91,7 +97,7 @@ python tools/kinect_latency.py --stream rgb               # Kinect command->seen
 the Kinect→GoPro extrinsic (`targeting/extrinsics.py`) then ties the two
 sensors together for fusion.
 
-### Phone as primary targeting camera
+### Phone sensor (OnePlus 15 companion app)
 
 PC-side support for the OnePlus 15 companion app — the phone is a
 dumb-on-purpose smart sensor: the PC sends commands (switch lens, set AF,
@@ -109,8 +115,8 @@ python scripts/step11_calibration.py --camera phone --phone-camera main
 `--phone-camera {ultrawide,main,telephoto}` chooses which lens to calibrate;
 sensor_id becomes `phone_<lens>` so each lens stores its own homography
 profile (Approach B, §3.4). The PC code is in place and tested with a
-loopback fake phone; **the Android companion app is the missing half** — see
-the bootstrap for what to build.
+loopback fake phone; the Android companion app lives in
+[android/](android/) — see [android/PHONE_APP.md](android/PHONE_APP.md).
 
 ### Kinect v2 — pykinect2 binding
 
@@ -199,15 +205,18 @@ time for faster apparent flight. You can still override the defaults with
 ```
 config/        Settings (single source of truth) + JSON override manager
 events/        Bus event dataclasses
-sensors/       Phone, GoPro, Kinect, local-cam, replay drivers + SensorManager
+sensors/       OV9281, phone, GoPro, Kinect, local-cam drivers + SensorManager
 phone_sensor/  PC side of NoMoSkeeters Sensor Protocol v1 (TCP commands, UDP frames)
+android/       Kotlin companion app for the phone sensor (android/PHONE_APP.md)
 detection/     Detector + classifier
 tracking/      Kalman/IoU tracker, assignment, cross-sensor fusion
 targeting/     Calibration, coordinate mapping, sweep patterns
 laser/         LaserCube protocol, transports, heartbeat, shot patterns
-safety/        No-fire zones, eligibility, decisions
-scripts/       Bench runners (first-light, calibration, acceptance)
-tools/         Probes, sensor comparison, stream/view helpers
+safety/        SafetyModerator (fire gate), Kinect depth + HOG person checks, voice
+capture/       Kill-cam (GoPro clip on shot)
+monitoring/    Session recorder (JSONL audit log) + shared session HUD
+scripts/       Session orchestrators + bench runners (first-light, calibration)
+tools/         Probes, latency tools, sensor comparison, session log viewer
 tests/         Unit + integration tests, golden fixtures
 ```
 

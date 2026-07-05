@@ -1,11 +1,11 @@
 # Core
 numpy>=1.24
 opencv-python>=4.8
-PySide6>=6.6
+# PySide6>=6.6            # reserved for the GUI (unbuilt — see README "Status")
 
-# Tracking + ML
-scipy>=1.11
-scikit-learn>=1.3
+# Tracking
+scipy>=1.11               # optional at runtime: tracking/assignment.py has a
+                          # greedy fallback when scipy is absent
 
 # Sensors
 pykinect2>=0.1.0          ; sys_platform == "win32"
