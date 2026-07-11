@@ -51,3 +51,7 @@ cone_demo_out/
 
 # Fusion skill local state (SQLite)
 .fusion/
+
+# AI assistant local files (kept locally, not tracked).
+.claude/
+FABLES_AUDIT_7-4-26.md
