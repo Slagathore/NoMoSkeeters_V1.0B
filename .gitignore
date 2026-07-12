@@ -54,4 +54,6 @@ cone_demo_out/
 
 # AI assistant local files (kept locally, not tracked).
 .claude/
+CLAUDE.md
+AGENTS.md
 FABLES_AUDIT_7-4-26.md
